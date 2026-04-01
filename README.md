@@ -62,7 +62,7 @@ uvicorn api.app:app --reload --port 8080
 
 ## Phase Roadmap
 
-### Phase 1 (0–3 months) — Active Now
+### Phase 1 — Active Now
 - Shadow mode: all decisions logged with `was_executed=False`, no external execution
 - Deterministic LLM rendering (template-based, no API calls)
 - MSM health computation across 4 dimensions with configurable thresholds
@@ -72,7 +72,7 @@ uvicorn api.app:app --reload --port 8080
 - MerchantApprovalGate enforcing human confirmation
 - Weekly planning with conflict detection
 
-### Phase 2 (3–6 months) — Activation
+### Phase 2 — Activation
 - Real LLM API integration for merchant copy rendering
 - External write APIs for Shopline and ad platform execution
 - Multi-merchant BenchmarkEngine with peer comparison data
