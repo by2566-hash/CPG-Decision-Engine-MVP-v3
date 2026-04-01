@@ -1,0 +1,36 @@
+# ── KG Playbook: Acquisition — Efficiency ─────────────────────────────────
+# Module: acquisition
+# Version: v1 (stub)
+# Description: Monitors CAC trends and optimizes acquisition spend.
+#
+# New in V3 — one of 3 new playbook modules.
+# ──────────────────────────────────────────────────────────────────────────
+
+playbook:
+  id: acquisition_efficiency_v1
+  module: acquisition
+  version: "1.0"
+  description: "Monitor and optimize customer acquisition cost efficiency"
+
+triggers:
+  # TODO: Define acquisition triggers
+  # Example: CAC_7d > baseline × 1.15 → DEGRADING
+  - name: cac_spike
+    condition: "CAC_7d > baseline * 1.15"
+    msm_state: DEGRADING
+
+patterns:
+  # TODO: Define pattern→cause→action chains
+  - name: rising_cac
+    signals: []
+    diagnosis: ""
+
+actions:
+  # TODO: Define acquisition actions
+  # Example: pause underperforming campaigns, reallocate budget
+  - id: PAUSE_LOW_ROAS_CAMPAIGN
+    type: CAMPAIGN_CONTROL
+    description: ""
+
+constraints:
+  - attribution_window_days: 30

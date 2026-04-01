@@ -1,0 +1,37 @@
+# ── KG Playbook: Conversion — Merchandising ──────────────────────────────
+# Module: conversion
+# Version: v1 (stub)
+# Description: Detects conversion bottlenecks and recommends
+#              merchandising optimizations.
+#
+# New in V3 — one of 3 new playbook modules.
+# ──────────────────────────────────────────────────────────────────────────
+
+playbook:
+  id: conversion_merchandising_v1
+  module: conversion
+  version: "1.0"
+  description: "Detect conversion bottlenecks and optimize merchandising"
+
+triggers:
+  # TODO: Define conversion triggers
+  # Example: mobile_atc < desktop × 0.7 → WATCH
+  - name: mobile_conversion_gap
+    condition: "mobile_atc < desktop_atc * 0.7"
+    msm_state: WATCH
+
+patterns:
+  # TODO: Define pattern→cause→action chains
+  - name: mobile_desktop_gap
+    signals: []
+    diagnosis: ""
+
+actions:
+  # TODO: Define conversion actions
+  # Example: mobile UX recommendations, product page optimizations
+  - id: MOBILE_UX_OPTIMIZATION
+    type: MERCHANDISING
+    description: ""
+
+constraints:
+  - attribution_window_days: 0  # Conversion = instant attribution

@@ -1,0 +1,50 @@
+# ── KG Playbook: Retention — Replenishment ────────────────────────────────
+# Module: retention
+# Version: v1
+# Description: Detects customers approaching replenishment window and
+#              triggers timely reminders or offers.
+#
+# Reference: V0/PLAYBOOKS/ (retention playbook — adapted to V3 YAML schema)
+# ──────────────────────────────────────────────────────────────────────────
+
+playbook:
+  id: retention_replenishment_v1
+  module: retention
+  version: "1.0"
+  description: "Detect and act on customers approaching replenishment cycle"
+
+triggers:
+  - name: overdue_replenishment
+    condition: "overdue_ratio > 1.5"
+    msm_state: DEGRADING
+    # TODO: Define full trigger conditions from V0 playbook
+
+patterns:
+  - name: high_value_approaching_churn
+    signals:
+      - "30+ day purchase gap for repeat buyer"
+      - "overdue_ratio > 1.5"
+    diagnosis: "High-value customer approaching churn threshold"
+    # TODO: Define pattern→cause→action chain
+
+actions:
+  - id: REMINDER_FIRST
+    type: REMINDER
+    priority: 1
+    description: "Send replenishment reminder before any discount"
+    # TODO: Define action parameters
+
+  - id: DISCOUNT_LAST_RESORT
+    type: DISCOUNT
+    priority: 2
+    prerequisites:
+      - "REMINDER_FIRST was sent and no response within 7d"
+    description: "Offer discount only after reminder fails"
+    # TODO: Define discount parameters and constraints
+
+constraints:
+  - margin_floor: true
+  - discount_last_resort: true
+  - incrementality_required: true
+  - cold_prospect_gate: true
+  - attribution_window_days: 7

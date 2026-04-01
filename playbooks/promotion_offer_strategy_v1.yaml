@@ -1,0 +1,39 @@
+# ── KG Playbook: Promotion — Offer Strategy ──────────────────────────────
+# Module: promotion
+# Version: v1 (stub)
+# Description: Evaluates promotion effectiveness and optimizes
+#              offer strategy to maximize incrementality.
+#
+# New in V3 — one of 3 new playbook modules.
+# ──────────────────────────────────────────────────────────────────────────
+
+playbook:
+  id: promotion_offer_strategy_v1
+  module: promotion
+  version: "1.0"
+  description: "Evaluate promotion effectiveness and optimize offer strategy"
+
+triggers:
+  # TODO: Define promotion triggers
+  # Example: promo_incrementality < 0.4 → WATCH
+  - name: low_incrementality
+    condition: "promo_incrementality < 0.4"
+    msm_state: WATCH
+
+patterns:
+  # TODO: Define pattern→cause→action chains
+  - name: discount_dependency
+    signals: []
+    diagnosis: ""
+
+actions:
+  # TODO: Define promotion actions
+  # Example: reduce discount depth, shift to value-add offers
+  - id: REDUCE_DISCOUNT_DEPTH
+    type: OFFER_OPTIMIZATION
+    description: ""
+
+constraints:
+  - margin_floor: true
+  - incrementality_required: true
+  - attribution_window_days: 14
