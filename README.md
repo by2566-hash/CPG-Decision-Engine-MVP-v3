@@ -13,6 +13,61 @@ CPG Decision Engine V3 is an **Operating Intelligence Layer** for CPG brands on 
 | L4 | Two-Plane Runtime | Deep Plane (async, weekly/6h cadence) + Fast Plane (sync, <50ms p99) |
 | L5 | World State Model | S/A/R/S' learning substrate — every decision logged, outcomes backfilled |
 
+### Architecture Execution Flow
+
+```mermaid
+graph TD
+    classDef L0 fill:#111827,stroke:#374151,color:#D1D5DB
+    classDef L1 fill:#1F2937,stroke:#4B5563,color:#E5E7EB
+    classDef L2 fill:#374151,stroke:#6B7280,color:#F3F4F6
+    classDef L3 fill:#4B5563,stroke:#9CA3AF,color:#F9FAFB
+    classDef L4 fill:#2563EB,stroke:#60A5FA,color:#FFFFFF,font-weight:bold
+    classDef L5 fill:#047857,stroke:#34D399,color:#FFFFFF,font-weight:bold
+    classDef Gate fill:#B91C1C,stroke:#F87171,color:#FFFFFF
+
+    subgraph L0_Data ["L0: Data Foundation"]
+        S1["Shopline / GA4 / Meta APIs"]:::L0 --> S2["Event Store & Commerce Graph"]:::L0
+    end
+
+    subgraph L1_MSM ["L1: Merchant State Machine"]
+        S2 --> M1["Compute 4-Dim Health States"]:::L1
+        M1 --> M2["Acquisition, Conversion, Retention, Promotion"]:::L1
+        M2 --> M3["Alert Engine Trigger"]:::L1
+    end
+
+    subgraph L2_Decision ["L2: Decision Engine (ML+KG+LLM)"]
+        M2 --> D1["Generate Candidates (KG)"]:::L2
+        D1 --> D2["Cross-Module Correlator"]:::L2
+        D2 --> D3["Scoring: β1·U_base + β2·U_ucb − β3·Risk"]:::L2
+    end
+
+    subgraph L3_Value ["L3: Value Intelligence & Safety"]
+        D3 <-->|Feedback Risk Penalty| V1["CPG 6 Hard Constraints Enforcement"]:::L3
+        D3 --> V2["Impact Calculator & Benchmarking"]:::L3
+        V2 --> V3["Weekly Planner Resolution"]:::L3
+    end
+
+    subgraph Verification ["Three-Layer Verification Chain"]
+        V3 --> C1{"1. Decision Verifier"}:::Gate
+        C1 -->|Pass| C2{"2. LLM Renderer"}:::Gate
+        C2 --> C3{"3. 5-Gate Bouncer QA"}:::Gate
+    end
+
+    subgraph L4_Runtime ["L4: Two-Plane Runtime"]
+        C3 -->|Write Async| R1["Redis/DB Cache (Deep Plane)"]:::L2
+        R1 --> R2["Fast Plane Serving API (<50ms)"]:::L4
+    end
+
+    subgraph Execution ["Merchant Workflow & L5: WSM"]
+        R2 --> UI("API / Merchant Dashboard"):::L4
+        UI -->|Approves Action| G1{"Merchant Approval Gate"}:::Gate
+        G1 -->|Authorized| E1["Rollback Registry (48h TTL)"]:::L3
+        E1 --> E2["Execute Connector APIs"]:::L5
+        E1 --> E3["Update WSM Action Log (S/A/R/S)"]:::L5
+    end
+```
+
+
 ## Three-Layer Verification Chain
 
 Every recommended action passes through three sequential gates before reaching the merchant:
