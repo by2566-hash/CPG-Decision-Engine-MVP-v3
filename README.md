@@ -46,17 +46,25 @@ This is intentional. Safety enforcement is its primary identity (Layer 3). Penal
 
 ## Quick Start
 
+### 1. Architecture Validation (Current Stage)
+The V3 architecture is fully validated using an in-memory SQLite database. You can verify all strictly-ordered constraints and decision logic independently:
+
 ```bash
 # Install dependencies
 pip install -e ".[dev]"
 
+# Run 100+ architecture verification tests (No Postgres/Redis required)
+python -m pytest tests/
+```
+
+### 2. Phase 1 Deployment (WIP)
+(Note: The following steps require configuring `.env` credentials for the infrastructure)
+
+```bash
 # Start infrastructure (Postgres + Redis)
 docker-compose up -d
 
-# Run tests
-python -m pytest tests/
-
-# Start API server
+# Start API server 
 uvicorn api.app:app --reload --port 8080
 ```
 
