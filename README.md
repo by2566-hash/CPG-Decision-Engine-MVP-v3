@@ -148,6 +148,23 @@ The architecture deliberately decouples Soft Reward Shaping from Hard Operationa
 Why is the Bandit actively suppressed (`u_ucb = 0.0`) in Phase 1?
 The regret bound of an untrained contextual bandit is catastrophic when each "pull" represents spending real marketing budget. We enforce a passive shadow-logging phase until explicit statistical significance is achieved over the state distribution. Phase 1 logs priors, Phase 2 generates Proxy Rewards across the ecosystem, and Phase 3 dynamically activates the $\alpha$ multiplier only once empirical variance fits safely within risk budget limits.
 
+### 5. Known Limitations and Open Problems
+
+- **Non-stationarity**: Merchant behavior distribution shifts over promotion 
+  seasons. The current WSM does not implement distribution shift detection. 
+  A CUSUM-based drift detector on the MSM state transition matrix is planned 
+  for Phase 3.
+
+- **Reward sparsity**: In Phase 1, most WSM records have was_executed=False 
+  (shadow mode). The bandit will train exclusively on approved actions, 
+  introducing survivorship bias. Debiasing via logged bandit approaches 
+  (Strehl et al. 2010) is a Phase 3 open problem.
+
+- **Linear assumption boundary**: CrossModuleCorrelator handles explicit 
+  cross-dimension interactions, but implicit non-linear merchant behavior 
+  (e.g., seasonality × margin sensitivity) is not captured in the current 
+  feature space.
+  
 ## Phase Roadmap
 
 ### Phase 1 — Active Now
