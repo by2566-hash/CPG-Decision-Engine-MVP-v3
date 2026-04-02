@@ -1,5 +1,11 @@
 # CPG Decision Engine V3
 
+> [!IMPORTANT]  
+> **Project Status: Architecture Validation & MVP Phase**  
+> This repository is currently in the foundational validation phase. Please note the following before reviewing:
+> - **Knowledge Graph (KG) & Use Cases:** The underlying Domain KG and structural playbook variations (action templates) are still under construction.
+> - **Data Availability:** We currently lack production commerce data; data pipelines run on deterministic stubs and mock state vectors to validate the architecture without requiring real PII or external DB connections.
+
 CPG Decision Engine V3 is an **Operating Intelligence Layer** for CPG brands on Shopline. It ingests commerce signals (orders, ads, inventory), diagnoses merchant health across four dimensions, recommends verified actions with dollar-impact estimates, and presents them for human approval before execution. It is **not** a dashboard, **not** a chatbot, and **not** an auto-executor — it is a decision recommendation system that requires merchant confirmation at every step.
 
 ## 6-Layer Architecture
