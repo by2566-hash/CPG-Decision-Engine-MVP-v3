@@ -123,6 +123,31 @@ docker-compose up -d
 uvicorn api.app:app --reload --port 8080
 ```
 
+## Technical Design Rationale
+
+This section details the ML architecture constraints, Safe RL tradeoffs, and engineering decisions made to bridge academic RL theory with the severe latency/safety constraints of B2B CPG commerce.
+
+### 1. Scoring Model Selection — Why LinUCB?
+The objective function balances domain-expert priors against dynamic bandit exploration: `Score = β1·U_base(KG) + β2·U_ucb(Bandit) − β3·Risk(Constraints)`.
+A senior ML practitioner might ask: *Why LinUCB (Li et al. 2010 WWW)? Why not Thompson Sampling or an over-parameterized Contextual Transformer?*
+*   **Curse of Dimensionality mitigation:** We discretize continuous merchant signals (e.g., exact CAC ratio) into an intentionally coarse 4-dimension × 4-state `Merchant State Vector` (e.g., *Acquisition: DEGRADING*). This aggressive abstraction bounds the contextual state space, drastically reducing the sample complexity required for convergence.
+*   **Controllable Variance vs. Thompson Sampling:** In B2B SaaS, unconstrained exploration is dangerous. Thompson Sampling's probabilistic selection can cause erratic behavior for the same merchant within a short window. LinUCB's deterministic upper bound allows strict reproducibility when debugging merchant traces.
+*   **Explainable Context:** Every action's contextual weight ($\theta$) is linear, allowing deterministic, reverse-engineerable explanations of *why* an action won.
+
+### 2. World State Model (WSM) as an RL Substrate
+The system implements a valid S/A/R/S' Markov Decision Process logging substrate, but natively addresses the **Delayed Feedback (Credit Assignment)** challenge. Action payoffs in commerce (e.g., LTV lift, 30-day ROAS) take weeks to materialize.
+*   **Proxy vs. Final Rewards (Temporal Difference approach):** At $T_0$, actions are logged identically. At $T_{+24h}$, a *Proxy Reward* (e.g., Add-To-Cart delta) updates the model for fast reactivity. At $T_{+30d}$, a *Final Reward* (e.g., actual ROI delta) overrides the trajectory, preventing catastrophic short-term bias.
+*   **Counterfactual Logging (Off-Policy Correction):** Because every action passes through a `MerchantApprovalGate`, the *Behavior Policy* (what the merchant actually approved) often diverges from the *Target Policy* (what the DE recommended). We actively append a `Counterfactual` record summarizing the "next best action" to establish the baseline for future Inverse Probability Weighting (IPW) causal inference.
+
+### 3. Safe RL Design — Soft Penalties vs. Hard Gates
+The architecture deliberately decouples Soft Reward Shaping from Hard Operational Gates.
+*   **Soft Penalty (`− β3·Risk`):** Risk calculation inside the scoring phase allows smooth, continuous penalization of suboptimal actions, shifting probability mass toward safer alternatives.
+*   **Hard Gates (Safety Shell):** Regardless of how aggressively large the LinUCB exploration bound becomes, the winning output is sequentially fed into the deterministic `DecisionVerifier` (the safety shell). Any absolute violations (e.g., `margin_floor` breaches, or conflicting logic) aggressively forcefully override the outcome to `final_score = -inf`. This strictly prioritizes determinism over probability.
+
+### 4. Phase Gate Thresholds — Exploration Data Bounds
+Why is the Bandit actively suppressed (`u_ucb = 0.0`) in Phase 1?
+The regret bound of an untrained contextual bandit is catastrophic when each "pull" represents spending real marketing budget. We enforce a passive shadow-logging phase until explicit statistical significance is achieved over the state distribution. Phase 1 logs priors, Phase 2 generates Proxy Rewards across the ecosystem, and Phase 3 dynamically activates the $\alpha$ multiplier only once empirical variance fits safely within risk budget limits.
+
 ## Phase Roadmap
 
 ### Phase 1 — Active Now
