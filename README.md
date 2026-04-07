@@ -10,7 +10,6 @@
 > - **Data Availability:** We currently lack production commerce data; data pipelines run on deterministic stubs and mock state vectors to validate the architecture without requiring real PII or external DB connections.
 > - **Knowledge Graph (KG) & Use Cases:** The underlying Domain KG and structural playbook variations (action templates) are still under construction.
 > - **Review Focus:** The core value demonstrated in this repository is the **robustness of the 6-layer architecture**, the strict **3-layer Safety Verification Chain**, and the **Decision Engine execution flow**, rather than the breadth of data or ML inference accuracy.
->>>>>>> c7c668a (feat(mockup): finalize merchant dashboard UI aligned with V3 architecture (L2 custom sliders, L3 weekly narrative, correlator suppression))
 
 CPG Decision Engine V3 is an **Operating Intelligence Layer** for CPG brands on Shopline. It ingests commerce signals (orders, ads, inventory), diagnoses merchant health across four dimensions, recommends verified actions with dollar-impact estimates, and presents them for human approval before execution. It is **not** a dashboard, **not** a chatbot, and **not** an auto-executor — it is a decision recommendation system that requires merchant confirmation at every step.
 
@@ -176,11 +175,7 @@ The regret bound of an untrained contextual bandit is catastrophic when each "pu
   cross-dimension interactions, but implicit non-linear merchant behavior 
   (e.g., seasonality × margin sensitivity) is not captured in the current 
   feature space.
-<<<<<<< HEAD
-  
-=======
 
->>>>>>> c7c668a (feat(mockup): finalize merchant dashboard UI aligned with V3 architecture (L2 custom sliders, L3 weekly narrative, correlator suppression))
 ## Phase Roadmap
 
 ### Phase 1 — Active Now
