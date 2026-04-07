@@ -4,7 +4,7 @@
  *   config.py, pipeline.py, scoring.py, constraints.py, contracts.py,
  *   impact_calculator.py, merchant_state_machine.py
  *
- * 5 pages: Overview → Health → AI Insights → Action Cards → Competitive Intel
+ * 7 pages: Overview → Health → AI Insights → Conversion Funnels → RFM → Action Cards → Competitive Intel
  * All V3 scoring runs internally; merchant sees business language only.
  * ── */
 
@@ -333,6 +333,360 @@ function buildInsights() {
 }
 
 // ═══════════════════════════════════════════════════════════════════
+//  Conversion Funnels + RFM (demo data — VC / investor walkthrough)
+// ═══════════════════════════════════════════════════════════════════
+
+const MOCK_FUNNEL_PRIMARY = {
+  periodLabel: 'Last 30 days',
+  stages: [
+    { key: 'sessions', label: 'Sessions', count: 46572, pctOfTop: 100 },
+    { key: 'pdp', label: 'Product views', count: 38120, pctOfTop: 81.9 },
+    { key: 'atc', label: 'Add to cart', count: 4520, pctOfTop: 9.7 },
+    { key: 'checkout', label: 'Checkout started', count: 1890, pctOfTop: 4.1 },
+    { key: 'purchase', label: 'Purchase', count: 1156, pctOfTop: 2.48 },
+  ],
+};
+
+const MOCK_FUNNEL_SPLIT = {
+  mobile: {
+    sharePct: 68,
+    stages: [
+      { label: 'Sessions', count: 31669 },
+      { label: 'Product views', count: 24820 },
+      { label: 'Add to cart', count: 2180 },
+      { label: 'Checkout started', count: 810 },
+      { label: 'Purchase', count: 612 },
+    ],
+  },
+  desktop: {
+    sharePct: 32,
+    stages: [
+      { label: 'Sessions', count: 14903 },
+      { label: 'Product views', count: 13300 },
+      { label: 'Add to cart', count: 2340 },
+      { label: 'Checkout started', count: 1080 },
+      { label: 'Purchase', count: 544 },
+    ],
+  },
+};
+
+const MOCK_RFM_SUMMARY = {
+  customersInScope: 42880,
+  identifiedPurchasers: 11240,
+  avgMonetary: 312.4,
+  medianRecencyDays: 38,
+  topSegmentByRevenue: 'Champions',
+};
+
+const MOCK_RFM_SEGMENTS = [
+  { id: 'champions', name: 'Champions', emoji: '👑', r: 5, f: 5, m: 5, customers: 3420, revenueShare: 0.28, avgOrder: 186, color: '#22c55e', blurb: 'Reward & upsell premium bundles; lowest discount reliance.' },
+  { id: 'loyal', name: 'Loyal Customers', emoji: '💎', r: 4, f: 4, m: 4, customers: 5180, revenueShare: 0.22, avgOrder: 142, blurb: 'Replenishment nudges + loyalty tier unlocks.' },
+  { id: 'potential', name: 'Potential Loyalists', emoji: '✨', r: 4, f: 3, m: 4, customers: 6240, revenueShare: 0.18, avgOrder: 118, blurb: 'Second-purchase campaigns within 14 days of first order.' },
+  { id: 'at_risk', name: 'At Risk', emoji: '⚠️', r: 2, f: 3, m: 3, customers: 4960, revenueShare: 0.12, avgOrder: 96, blurb: 'Win-back with reminders before margin-heavy promos.' },
+  { id: 'hibernating', name: 'Hibernating', emoji: '❄️', r: 1, f: 2, m: 2, customers: 8820, revenueShare: 0.09, avgOrder: 72, blurb: 'Long-cycle reactivation; suppress paid acquisition lookalikes.' },
+  { id: 'new', name: 'New Customers', emoji: '🌱', r: 5, f: 1, m: 2, customers: 14260, revenueShare: 0.11, avgOrder: 88, blurb: 'Onboarding & education — protect margin on first 60 days.' },
+];
+
+/** 5×5 heat: rows = Recency quintile (5=recent), cols = Frequency quintile (5=frequent) — customer counts */
+const MOCK_RFM_HEAT = [
+  [420, 310, 280, 190, 120],
+  [380, 520, 410, 260, 140],
+  [290, 610, 890, 720, 380],
+  [180, 340, 1120, 1380, 910],
+  [90, 210, 680, 1520, 2480],
+];
+
+function funnelStageRows(stages) {
+  return stages.map((s, i) => {
+    const prev = i > 0 ? stages[i - 1].count : s.count;
+    const drop = i > 0 && prev > 0 ? Math.round((1 - s.count / prev) * 1000) / 10 : null;
+    const rowDrop = drop != null
+      ? `<span class="funnel-drop">${drop}% drop vs prior</span>`
+      : '<span class="funnel-drop funnel-drop-na">—</span>';
+    const widthPct = Math.max(8, (s.count / stages[0].count) * 100);
+    return `
+      <div class="funnel-stage-row">
+        <div class="funnel-stage-meta">
+          <span class="funnel-stage-label">${s.label}</span>
+          <span class="funnel-stage-count">${s.count.toLocaleString()}</span>
+        </div>
+        <div class="funnel-bar-track">
+          <div class="funnel-bar-fill" style="width:${widthPct.toFixed(1)}%"></div>
+        </div>
+        ${rowDrop}
+      </div>`;
+  }).join('');
+}
+
+function drawFunnelBars(canvasId, stages) {
+  const canvas = document.getElementById(canvasId);
+  if (!canvas) return;
+  const wrap = canvas.parentElement;
+  const W = Math.max(280, (wrap && wrap.clientWidth) ? wrap.clientWidth - 32 : 400);
+  const H = 220;
+  canvas.width = W;
+  canvas.height = H;
+  const ctx = canvas.getContext('2d');
+  ctx.fillStyle = '#0a0a0a';
+  ctx.fillRect(0, 0, W, H);
+
+  const maxC = stages[0].count;
+  const n = stages.length;
+  const gap = 10;
+  const barH = Math.floor((H - gap * (n - 1) - 36) / n);
+  const maxBarW = W - 120;
+
+  stages.forEach((s, i) => {
+    const y = 16 + i * (barH + gap);
+    const bw = Math.max(24, (s.count / maxC) * maxBarW);
+    const grad = ctx.createLinearGradient(100, y, 100 + bw, y + barH);
+    grad.addColorStop(0, '#3b82f6');
+    grad.addColorStop(1, 'rgba(239,68,68,0.85)');
+    ctx.fillStyle = grad;
+    ctx.fillRect(100, y, bw, barH);
+    ctx.fillStyle = '#666';
+    ctx.font = '11px Inter, sans-serif';
+    ctx.textAlign = 'right';
+    ctx.fillText(s.label, 94, y + barH / 2 + 4);
+    ctx.fillStyle = '#f0f0f0';
+    ctx.textAlign = 'left';
+    ctx.font = '600 12px Inter, sans-serif';
+    ctx.fillText(s.count.toLocaleString(), 108 + bw + 8, y + barH / 2 + 4);
+  });
+}
+
+/** Grouped horizontal bars: mobile (blue) vs desktop (coral) per funnel stage */
+function drawFunnelSplitChart(canvasId, mobileStages, desktopStages) {
+  const canvas = document.getElementById(canvasId);
+  if (!canvas) return;
+  const wrap = canvas.parentElement;
+  const W = Math.max(280, (wrap && wrap.clientWidth) ? wrap.clientWidth - 32 : 400);
+  const H = 220;
+  canvas.width = W;
+  canvas.height = H;
+  const ctx = canvas.getContext('2d');
+  ctx.fillStyle = '#0a0a0a';
+  ctx.fillRect(0, 0, W, H);
+
+  const maxC = Math.max(mobileStages[0].count, desktopStages[0].count);
+  const n = mobileStages.length;
+  const gap = 8;
+  const rowH = Math.floor((H - gap * (n - 1) - 28) / n);
+  const halfH = Math.max(10, Math.floor(rowH / 2) - 2);
+  const maxBarW = W - 128;
+
+  mobileStages.forEach((s, i) => {
+    const yBase = 18 + i * (rowH + gap);
+    const dm = desktopStages[i];
+    const wm = (s.count / maxC) * maxBarW;
+    const wd = (dm.count / maxC) * maxBarW;
+    ctx.fillStyle = '#666';
+    ctx.font = '10px Inter, sans-serif';
+    ctx.textAlign = 'right';
+    ctx.fillText(s.label.split(' ')[0], 92, yBase + rowH / 2 + 3);
+
+    ctx.fillStyle = 'rgba(59,130,246,0.9)';
+    ctx.fillRect(100, yBase, Math.max(6, wm), halfH);
+    ctx.fillStyle = 'rgba(239,68,68,0.85)';
+    ctx.fillRect(100, yBase + halfH + 2, Math.max(6, wd), halfH);
+
+    ctx.fillStyle = '#888';
+    ctx.font = '10px Inter, sans-serif';
+    ctx.textAlign = 'left';
+    ctx.fillText(`${s.count.toLocaleString()}`, 104 + wm, yBase + halfH - 1);
+    ctx.fillText(`${dm.count.toLocaleString()}`, 104 + wd, yBase + halfH + halfH + 6);
+  });
+
+  ctx.fillStyle = '#555';
+  ctx.font = '10px Inter, sans-serif';
+  ctx.textAlign = 'left';
+  ctx.fillText('■ mobile   ■ desktop', 100, H - 6);
+}
+
+function drawRfmHeatmap() {
+  const canvas = document.getElementById('rfm-heatmap');
+  if (!canvas) return;
+  const wrap = canvas.parentElement;
+  const W = Math.max(300, (wrap && wrap.clientWidth) ? wrap.clientWidth - 48 : 400);
+  const H = 260;
+  canvas.width = W;
+  canvas.height = H;
+  const ctx = canvas.getContext('2d');
+  const grid = MOCK_RFM_HEAT;
+  const rows = grid.length;
+  const cols = grid[0].length;
+  const padL = 44;
+  const padT = 36;
+  const cellW = (W - padL - 16) / cols;
+  const cellH = (H - padT - 24) / rows;
+  let vmax = 0;
+  grid.forEach(r => r.forEach(c => { if (c > vmax) vmax = c; }));
+
+  ctx.fillStyle = '#141414';
+  ctx.fillRect(0, 0, W, H);
+  ctx.fillStyle = '#666';
+  ctx.font = '10px Inter, sans-serif';
+  ctx.textAlign = 'center';
+  for (let c = 0; c < cols; c++) {
+    ctx.fillText(`F${cols - c}`, padL + c * cellW + cellW / 2, 22);
+  }
+  for (let r = 0; r < rows; r++) {
+    ctx.textAlign = 'right';
+    ctx.fillText(`R${rows - r}`, padL - 8, padT + r * cellH + cellH / 2 + 4);
+    ctx.textAlign = 'center';
+    for (let c = 0; c < cols; c++) {
+      const v = grid[r][c];
+      const t = vmax ? v / vmax : 0;
+      const hue = 210 - t * 120;
+      ctx.fillStyle = `hsla(${hue}, 70%, ${28 + t * 22}%, 0.92)`;
+      const x = padL + c * cellW + 2;
+      const y = padT + r * cellH + 2;
+      ctx.fillRect(x, y, cellW - 4, cellH - 4);
+      ctx.fillStyle = v > vmax * 0.45 ? '#f0f0f0' : '#ccc';
+      ctx.font = '600 12px Inter, sans-serif';
+      ctx.fillText(String(v), x + (cellW - 4) / 2, y + (cellH - 4) / 2 + 4);
+    }
+  }
+}
+
+function renderFunnels() {
+  const hero = document.getElementById('funnel-hero');
+  const conv = STATE.dimensions.conversion;
+  hero.innerHTML = `
+    <div class="funnel-hero-inner">
+      <div>
+        <div class="funnel-hero-kicker">L1 · ${DIM.conversion.label}</div>
+        <h2 class="funnel-hero-title">Where demand leaks before it becomes revenue</h2>
+        <p class="funnel-hero-desc">
+          Demo funnel uses the same visitor and order baselines as <strong>Overview</strong>. Largest structural gap:
+          <strong>mobile add-to-cart → checkout</strong> (aligns with your <em>${conv.state}</em> MSM state).
+        </p>
+      </div>
+      <div class="funnel-hero-stats">
+        <div class="funnel-stat">
+          <span class="funnel-stat-label">Overall session CVR</span>
+          <span class="funnel-stat-val">${((MOCK_FUNNEL_PRIMARY.stages[4].count / MOCK_FUNNEL_PRIMARY.stages[0].count) * 100).toFixed(2)}%</span>
+        </div>
+        <div class="funnel-stat">
+          <span class="funnel-stat-label">Cart → checkout yield</span>
+          <span class="funnel-stat-val">${Math.round((MOCK_FUNNEL_PRIMARY.stages[3].count / MOCK_FUNNEL_PRIMARY.stages[2].count) * 100)}%</span>
+        </div>
+        <div class="funnel-stat">
+          <span class="funnel-stat-label">Checkout → order</span>
+          <span class="funnel-stat-val">${Math.round((MOCK_FUNNEL_PRIMARY.stages[4].count / MOCK_FUNNEL_PRIMARY.stages[3].count) * 100)}%</span>
+        </div>
+      </div>
+    </div>`;
+
+  document.getElementById('funnel-stages-primary').innerHTML = funnelStageRows(MOCK_FUNNEL_PRIMARY.stages);
+  drawFunnelBars('funnel-chart-primary', MOCK_FUNNEL_PRIMARY.stages);
+
+  const m = MOCK_FUNNEL_SPLIT.mobile.stages;
+  const d = MOCK_FUNNEL_SPLIT.desktop.stages;
+  drawFunnelSplitChart('funnel-chart-split', m, d);
+
+  const mobCvr = m[4].count / m[0].count;
+  const deskCvr = d[4].count / d[0].count;
+  document.getElementById('funnel-split-legend').innerHTML = `
+    <div class="funnel-split-grid">
+      <div class="funnel-split-col">
+        <div class="funnel-split-head">📱 Mobile (${MOCK_FUNNEL_SPLIT.mobile.sharePct}% sessions)</div>
+        <div class="funnel-split-metric">Session → order <strong>${(mobCvr * 100).toFixed(2)}%</strong></div>
+        <div class="funnel-split-sub">ATC rate ${((m[2].count / m[1].count) * 100).toFixed(1)}% of PDP views</div>
+      </div>
+      <div class="funnel-split-col">
+        <div class="funnel-split-head">🖥️ Desktop (${MOCK_FUNNEL_SPLIT.desktop.sharePct}%)</div>
+        <div class="funnel-split-metric">Session → order <strong>${(deskCvr * 100).toFixed(2)}%</strong></div>
+        <div class="funnel-split-sub">ATC rate ${((d[2].count / d[1].count) * 100).toFixed(1)}% of PDP views</div>
+      </div>
+    </div>
+    <p class="funnel-split-foot">Stacked chart combines both device funnels; numeric breakdown is shown for investor Q&amp;A.</p>`;
+
+  document.getElementById('funnel-insights').innerHTML = `
+    <div class="comp-section-title">🔗 Decision Engine hooks (illustrative)</div>
+    <div class="funnel-insight-grid">
+      <div class="funnel-insight">
+        <span class="funnel-insight-tag">Cross-Module</span>
+        <p class="funnel-insight-text">Suppress <strong>+Acquisition spend</strong> until mobile checkout friction is reduced — matches suppressed insight on <em>AI Insights</em>.</p>
+      </div>
+      <div class="funnel-insight">
+        <span class="funnel-insight-tag">RFM</span>
+        <p class="funnel-insight-text">Prioritize <strong>Champions + Loyal</strong> with replenishment before funding broad promo — see <em>Segmentation (RFM)</em>.</p>
+      </div>
+      <div class="funnel-insight">
+        <span class="funnel-insight-tag">Impact</span>
+        <p class="funnel-insight-text">Closing half the mobile PDP→ATC gap is modeled as a high-leverage conversion play (benchmark confidence ${Math.round(PHASE1_CONFIDENCE * 100)}%).</p>
+      </div>
+    </div>`;
+}
+
+function renderRfm() {
+  const kpis = document.getElementById('rfm-kpis');
+  kpis.innerHTML = `
+    <div class="rfm-kpi">
+      <span class="rfm-kpi-label">Customers in scope</span>
+      <span class="rfm-kpi-val">${MOCK_RFM_SUMMARY.customersInScope.toLocaleString()}</span>
+    </div>
+    <div class="rfm-kpi">
+      <span class="rfm-kpi-label">12-mo purchasers (identified)</span>
+      <span class="rfm-kpi-val">${MOCK_RFM_SUMMARY.identifiedPurchasers.toLocaleString()}</span>
+    </div>
+    <div class="rfm-kpi">
+      <span class="rfm-kpi-label">Avg monetary (12 mo)</span>
+      <span class="rfm-kpi-val">$${MOCK_RFM_SUMMARY.avgMonetary.toFixed(2)}</span>
+    </div>
+    <div class="rfm-kpi">
+      <span class="rfm-kpi-label">Median recency</span>
+      <span class="rfm-kpi-val">${MOCK_RFM_SUMMARY.medianRecencyDays} days</span>
+    </div>
+    <div class="rfm-kpi rfm-kpi-accent">
+      <span class="rfm-kpi-label">Top revenue segment</span>
+      <span class="rfm-kpi-val">${MOCK_RFM_SUMMARY.topSegmentByRevenue}</span>
+    </div>`;
+
+  document.getElementById('rfm-matrix-note').textContent =
+    'Axes: R = recency quintile (top row = most recent), F = frequency quintile (right = most frequent). Cell value = customer count (demo).';
+
+  drawRfmHeatmap();
+
+  document.getElementById('rfm-segments-list').innerHTML = MOCK_RFM_SEGMENTS.map(seg => `
+    <div class="rfm-seg-row">
+      <div class="rfm-seg-left">
+        <span class="rfm-seg-emoji">${seg.emoji}</span>
+        <div>
+          <div class="rfm-seg-name">${seg.name}</div>
+          <div class="rfm-seg-rfm">R${seg.r} · F${seg.f} · M${seg.m}</div>
+        </div>
+      </div>
+      <div class="rfm-seg-mid">
+        <span class="rfm-seg-cust">${seg.customers.toLocaleString()} customers</span>
+        <div class="rfm-rev-bar-wrap">
+          <div class="rfm-rev-bar" style="width:${Math.min(100, seg.revenueShare * 200)}%;background:${seg.color}"></div>
+        </div>
+        <span class="rfm-seg-rev">${Math.round(seg.revenueShare * 100)}% revenue</span>
+      </div>
+      <div class="rfm-seg-blurb">${seg.blurb} <span class="rfm-ao">AOV $${seg.avgOrder}</span></div>
+    </div>`).join('');
+
+  document.getElementById('rfm-actions-strip').innerHTML = `
+    <div class="comp-section-title">Recommended plays by segment (demo narrative)</div>
+    <div class="rfm-play-grid">
+      <div class="rfm-play-card">
+        <h4 class="rfm-play-title">Protect margin</h4>
+        <p class="rfm-play-text">Route <strong>At Risk</strong> to reminders and merchandising tests before discounts — satisfies CPG hard constraints in <code>constraints.py</code>.</p>
+      </div>
+      <div class="rfm-play-card">
+        <h4 class="rfm-play-title">Accelerate LTV</h4>
+        <p class="rfm-play-text">Move <strong>Potential Loyalists</strong> into second purchase within 14 days to feed the bandit with cleaner reward signal.</p>
+      </div>
+      <div class="rfm-play-card">
+        <h4 class="rfm-play-title">Executive readout</h4>
+        <p class="rfm-play-text"><strong>Champions + Loyal</strong> = ${Math.round((MOCK_RFM_SEGMENTS[0].revenueShare + MOCK_RFM_SEGMENTS[1].revenueShare) * 100)}% of revenue — defend retention before scaling acquisition.</p>
+      </div>
+    </div>`;
+}
+
+// ═══════════════════════════════════════════════════════════════════
 //  Navigation
 // ═══════════════════════════════════════════════════════════════════
 
@@ -342,8 +696,12 @@ function navigateTo(pageId) {
   document.getElementById('page-' + pageId).classList.add('active');
   // Update nav items
   document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
-  document.querySelector(`.nav-item[data-page="${pageId}"]`).classList.add('active');
+  const nav = document.querySelector(`.nav-item[data-page="${pageId}"]`);
+  if (nav) nav.classList.add('active');
   window.scrollTo(0, 0);
+  // Charts need visible layout for correct canvas width
+  if (pageId === 'funnels') requestAnimationFrame(() => renderFunnels());
+  if (pageId === 'rfm') requestAnimationFrame(() => renderRfm());
 }
 
 // ═══════════════════════════════════════════════════════════════════
