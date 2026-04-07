@@ -1,0 +1,224 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="description" content="Brand Intelligence — AI-powered analytics for your store">
+  <title>Brand Intelligence — Dashboard</title>
+  <link rel="stylesheet" href="styles.css">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+</head>
+<body>
+
+  <!-- ── Left Sidebar Navigation ── -->
+  <aside class="sidebar" id="sidebar">
+    <div class="sidebar-header">
+      <span class="sidebar-label">ANALYTICS</span>
+    </div>
+    <nav class="sidebar-nav">
+      <a class="nav-item active" data-page="overview" onclick="navigateTo('overview')">
+        <span class="nav-icon">📊</span> Overview
+      </a>
+      <a class="nav-item" data-page="health" onclick="navigateTo('health')">
+        <span class="nav-icon">💓</span> Business Health
+      </a>
+      <a class="nav-item" data-page="insights" onclick="navigateTo('insights')">
+        <span class="nav-icon">✨</span> AI Insights
+      </a>
+      <a class="nav-item" data-page="actions" onclick="navigateTo('actions')">
+        <span class="nav-icon">⚡</span> Action Cards
+      </a>
+      <a class="nav-item" data-page="competitive" onclick="navigateTo('competitive')">
+        <span class="nav-icon">🏆</span> Competitive Intel
+      </a>
+    </nav>
+  </aside>
+
+  <!-- ── Top Bar ── -->
+  <header class="topbar" id="topbar">
+    <div class="topbar-left">
+      <span class="store-icon">🏪</span>
+      <span class="store-name">TechHub Electronics</span>
+      <span class="shadow-mode-badge" id="shadow-badge">🟢 Shadow Mode — AI is learning, you control all actions</span>
+    </div>
+    <div class="topbar-right">
+      <div class="topbar-notification" onclick="toggleNotifications()">
+        🔔<span class="notif-dot"></span>
+        <!-- Alert Dropdown -->
+        <div class="notif-dropdown" id="notif-dropdown">
+          <div class="notif-dropdown-header">Recent Alerts</div>
+          <div id="notif-list"></div>
+        </div>
+      </div>
+    </div>
+  </header>
+
+  <!-- ── Main Content Area ── -->
+  <main class="content" id="content">
+
+    <!-- ═══ PAGE: Overview ═══ -->
+    <section class="page active" id="page-overview">
+      <div class="page-header">
+        <div>
+          <h1 class="page-title">Dashboard Overview</h1>
+          <p class="page-subtitle">Real-time analytics and AI-powered insights for your store</p>
+        </div>
+        <div class="date-pills">
+          <button class="pill">7 Days</button>
+          <button class="pill active">30 Days</button>
+          <button class="pill">90 Days</button>
+        </div>
+      </div>
+      <!-- KPI Hero -->
+      <div class="kpi-grid" id="kpi-grid"></div>
+      <!-- Charts -->
+      <div class="charts-grid">
+        <div class="card chart-card">
+          <h3 class="card-title">Revenue Trend</h3>
+          <canvas id="revenue-chart" height="200"></canvas>
+        </div>
+        <div class="card chart-card">
+          <h3 class="card-title">Traffic Sources</h3>
+          <canvas id="traffic-chart" height="200"></canvas>
+        </div>
+      </div>
+      <!-- AI Quick Insights -->
+      <div class="card" id="overview-insights">
+        <h3 class="card-title">AI Insights</h3>
+        <div id="quick-insights-list"></div>
+      </div>
+      <!-- Learning Progress -->
+      <div class="card" id="learning-progress-card">
+        <h3 class="card-title">🧠 Engine Learning Progress</h3>
+        <div id="learning-progress"></div>
+      </div>
+    </section>
+
+    <!-- ═══ PAGE: Business Health ═══ -->
+    <section class="page" id="page-health">
+      <div class="page-header">
+        <div>
+          <h1 class="page-title">Business Health</h1>
+          <p class="page-subtitle">4-dimensional health monitoring across your operations</p>
+        </div>
+        <span class="status-badge" id="overall-status-badge">Updated 2 hours ago</span>
+      </div>
+      <!-- Alert -->
+      <div class="alert-bar" id="health-alert"></div>
+      <!-- Health Cards -->
+      <div class="health-grid" id="health-grid"></div>
+    </section>
+
+    <!-- ═══ PAGE: AI Insights ═══ -->
+    <section class="page" id="page-insights">
+      <div class="page-header">
+        <div>
+          <h1 class="page-title">AI Insights</h1>
+          <p class="page-subtitle">Actionable recommendations powered by Decision Engine</p>
+        </div>
+        <button class="btn-accent" id="btn-regenerate" onclick="renderInsights()">🔄 Regenerate</button>
+      </div>
+
+      <!-- L2 Policy Pack: Strategy Steering -->
+      <div class="card policy-pack-card" id="policy-pack">
+        <div class="policy-header">
+          <div class="policy-title-area">
+            <h3 class="card-title" style="margin-bottom: 4px;">🎯 Strategic Objectives (L2 Policy)</h3>
+            <p class="page-subtitle">Steer the AI's recommendation engine down specific business goals.</p>
+          </div>
+          <div class="policy-presets" id="policy-presets">
+            <!-- Buttons rendered via JS -->
+          </div>
+        </div>
+        <div class="policy-equalizer">
+          <div class="eq-item">
+            <div class="eq-labels"><span class="eq-name">📈 Growth (LKG)</span><span class="eq-val" id="eq-val-lkg">0.4</span></div>
+            <input type="range" class="eq-slider" id="eq-fill-lkg" min="0" max="100" value="40" step="1" oninput="handleSliderDrag('lkg')" onchange="handleSliderDrop()">
+          </div>
+          <div class="eq-item">
+            <div class="eq-labels"><span class="eq-name">💰 Margin (LKM)</span><span class="eq-val" id="eq-val-lkm">0.3</span></div>
+            <input type="range" class="eq-slider" id="eq-fill-lkm" min="0" max="100" value="30" step="1" oninput="handleSliderDrag('lkm')" onchange="handleSliderDrop()">
+          </div>
+          <div class="eq-item">
+            <div class="eq-labels"><span class="eq-name">📦 Inventory Risk (LKI)</span><span class="eq-val" id="eq-val-lki">0.2</span></div>
+            <input type="range" class="eq-slider" id="eq-fill-lki" min="0" max="100" value="20" step="1" oninput="handleSliderDrag('lki')" onchange="handleSliderDrop()">
+          </div>
+          <div class="eq-item">
+            <div class="eq-labels"><span class="eq-name">🤝 Retention (LKR)</span><span class="eq-val" id="eq-val-lkr">0.1</span></div>
+            <input type="range" class="eq-slider" id="eq-fill-lkr" min="0" max="100" value="10" step="1" oninput="handleSliderDrag('lkr')" onchange="handleSliderDrop()">
+          </div>
+        </div>
+      </div>
+
+      <!-- Filter Tabs -->
+      <div class="filter-tabs" id="insight-tabs">
+        <button class="tab active" data-filter="all" onclick="filterInsights('all')">All Insights</button>
+        <button class="tab" data-filter="high" onclick="filterInsights('high')">High Priority</button>
+        <button class="tab" data-filter="opportunity" onclick="filterInsights('opportunity')">Opportunities</button>
+        <button class="tab" data-filter="warning" onclick="filterInsights('warning')">Warnings</button>
+      </div>
+      <div class="insights-grid" id="insights-grid"></div>
+    </section>
+
+    <!-- ═══ PAGE: Action Cards ═══ -->
+    <section class="page" id="page-actions">
+      <div class="page-header">
+        <div>
+          <h1 class="page-title">Action Cards</h1>
+          <p class="page-subtitle">AI-generated actionable tasks to improve your store performance</p>
+        </div>
+      </div>
+      <div class="weekly-planner-banner" id="weekly-planner-narrative"></div>
+      <h3 class="section-label" id="pending-label">Pending Actions (0)</h3>
+      <div class="actions-list" id="pending-actions"></div>
+      <h3 class="section-label" id="completed-label">Completed Actions (0)</h3>
+      <div class="actions-list" id="completed-actions"></div>
+    </section>
+
+    <!-- ═══ PAGE: Competitive Intel ═══ -->
+    <section class="page" id="page-competitive">
+      <div class="page-header">
+        <div>
+          <h1 class="page-title">Competitive Intelligence</h1>
+          <p class="page-subtitle">AI-powered market analysis and strategic positioning</p>
+        </div>
+        <button class="btn-accent" onclick="alert('Analysis regenerated with latest data.')">🔄 Regenerate Analysis</button>
+      </div>
+      <!-- Market Position -->
+      <div class="card" id="market-position"></div>
+      <!-- Industry Benchmarks -->
+      <div class="card" id="industry-benchmarks"></div>
+      <!-- Strengths + Opportunities -->
+      <div class="dual-grid">
+        <div class="card" id="strengths-card"></div>
+        <div class="card" id="opportunities-card"></div>
+      </div>
+    </section>
+
+  </main>
+
+  <!-- Toast notification -->
+  <div class="toast" id="toast"></div>
+
+  <!-- Feedback Modal -->
+  <div class="modal-overlay" id="feedback-modal" onclick="closeFeedbackModal(event)">
+    <div class="modal-box">
+      <div class="modal-header">
+        <h3>How did this action go?</h3>
+        <button class="modal-close" onclick="closeFeedbackModal()">✕</button>
+      </div>
+      <div class="modal-body">
+        <p class="modal-desc" id="feedback-action-title"></p>
+        <div class="feedback-options" id="feedback-options"></div>
+        <textarea class="feedback-note" id="feedback-note" placeholder="Optional: Add a note..."></textarea>
+      </div>
+      <div class="modal-footer">
+        <button class="btn-outline" onclick="closeFeedbackModal()">Cancel</button>
+        <button class="btn-accent" onclick="submitFeedback()">Submit Feedback</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
