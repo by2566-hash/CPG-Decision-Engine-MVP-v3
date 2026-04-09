@@ -1,28 +1,41 @@
 # CPG Decision Engine V3
 
-> [!IMPORTANT]  
-> **Project Status: Architecture Validation & MVP Phase**  
+> [!IMPORTANT]
+> **Project Status: Architecture Validation & MVP Phase**
 > This repository is currently in the foundational validation phase. Please note the following before reviewing:
-<<<<<<< HEAD
-> - **Knowledge Graph (KG) & Use Cases:** The underlying Domain KG and structural playbook variations (action templates) are still under construction.
-> - **Data Availability:** We currently lack production commerce data; data pipelines run on deterministic stubs and mock state vectors to validate the architecture without requiring real PII or external DB connections.
-=======
 > - **Data Availability:** We currently lack production commerce data; data pipelines run on deterministic stubs and mock state vectors to validate the architecture without requiring real PII or external DB connections.
 > - **Knowledge Graph (KG) & Use Cases:** The underlying Domain KG and structural playbook variations (action templates) are still under construction.
 > - **Review Focus:** The core value demonstrated in this repository is the **robustness of the 6-layer architecture**, the strict **3-layer Safety Verification Chain**, and the **Decision Engine execution flow**, rather than the breadth of data or ML inference accuracy.
 
 CPG Decision Engine V3 is an **Operating Intelligence Layer** for CPG brands on Shopline. It ingests commerce signals (orders, ads, inventory), diagnoses merchant health across four dimensions, recommends verified actions with dollar-impact estimates, and presents them for human approval before execution. It is **not** a dashboard, **not** a chatbot, and **not** an auto-executor — it is a decision recommendation system that requires merchant confirmation at every step.
 
+## Governance
+This project follows formal architecture governance:
+- **Decisions**: documented in `docs/adr/`
+- **Roadmap**: `docs/PHASE_ROADMAP.md`
+- **Architecture reference**: `CLAUDE.md`
+- **How to contribute**: `docs/EVOLUTION_GUIDE.md`
+
 ## 6-Layer Architecture
 
 | Layer | Name | Description |
 |-------|------|-------------|
-| L0 | Data Foundation | Connectors (Shopline, Meta Ads, GA4) + Event Store + Commerce Graph |
-| L1 | Merchant State Machine | 4 dimensions (acquisition, conversion, retention, promotion) × 4 states (HEALTHY → WATCH → DEGRADING → CRITICAL) + Alert Engine |
-| L2 | Tri-Pillar Decision Engine | Knowledge Graph + ML Models + LLM Renderer, unified by Cross-Module Correlator and Scoring Engine |
-| L3 | Value Intelligence | ImpactCalculator, BenchmarkEngine, FeedbackCollector, WeeklyPlanner, RollbackRegistry, MerchantApprovalGate, Constraints |
-| L4 | Two-Plane Runtime | Deep Plane (async, weekly/6h cadence) + Fast Plane (sync, <50ms p99) |
-| L5 | World State Model | S/A/R/S' learning substrate — every decision logged, outcomes backfilled |
+| L0 | Signal Plane | Connectors (Shopline, Meta Ads, GA4) + Event Store + Commerce Graph. Data factualisation only — zero decision logic. |
+| L1 | Merchant State Plane | 4 dimensions × 4 states (HEALTHY → WATCH → DEGRADING → CRITICAL) + Alert Engine. Routing state only — not a complete feature representation for ML. |
+| L2 | Domain World Model | Typed world model (entities + relations) + evidence graph + candidate expansion context. Phase 1: playbook registry + commerce graph stubs. |
+| L3 | Decision Core | 5 sub-modules in strict order: Candidate Proposal → Correlation & Conflict → Policy Evaluation (PolicyDecision) → Scoring & Ranking → Verification |
+| L4 | Experience & Delivery Plane | Verified decisions → DecisionCard rendering → 5-Gate QA → cache serving. Deep Plane (async) + Fast Plane (<50ms, cache-only). |
+| L5 | Learning Fabric | S/A/R/S' substrate — Decision Log, Execution Log, Outcome Log, Feature History. Not an execution layer. |
+
+### L3 Decision Core — Sub-module Boundaries
+
+| Sub-module | Input | Output | Key Type |
+|-----------|-------|--------|----------|
+| L3.1 Candidate Proposal | MSM states + KG/playbooks | Raw action candidates | `RawCandidate` |
+| L3.2 Correlation & Conflict | RawCandidate[] | Filtered, de-conflicted | CrossModuleCorrelator |
+| L3.3 Policy Evaluation | Candidate + constraints | Eligibility + weighted risk | `PolicyDecision` |
+| L3.4 Scoring & Ranking | Candidate + PolicyDecision | Ranked by β formula | `ScoredCandidate` |
+| L3.5 Verification | Top-K scored | Verified or -inf | DecisionVerifier |
 
 ### Architecture Execution Flow
 
@@ -91,15 +104,20 @@ This chain ensures that no unverified decision is ever rendered, and no poorly-e
 
 ## Architecture Notes
 
-**Cross-Layer Dependency: constraints.py**
+**PolicyDecision — unified constraint interface**
 
-constraints.py is placed under Layer 3 (Action Safety) because its primary role is safety enforcement before execution. However, its outputs are also consumed by Layer 2 scoring as the Risk(Constraints) term in:
+`ConstraintEngine.check_all()` returns a `PolicyDecision` object (L3.3), replacing the former split between a `tuple[bool, list[str]]` and a separate `float` from `compute_risk_score()`. `PolicyDecision` carries:
+- `eligible` / `hard_reject` — gate signal
+- `violations` — typed list in `"constraint_name:detail"` format
+- `risk_penalty` — weighted sum (margin_floor=3.0, inventory_gate=2.5, incrementality=2.0, etc.), not a raw count
+
+`PolicyDecision.risk_penalty` feeds the β3·Risk term directly:
 
 ```
 Score = β1·U_base + β2·U_ucb − β3·Risk(Constraints)
 ```
 
-This is intentional. Safety enforcement is its primary identity (Layer 3). Penalty signal is its secondary role (consumed by Layer 2 scoring).
+Safety enforcement is its primary identity (L3). Penalty signal is its secondary role (consumed by L3.4 scoring). `ConstraintEngine` still lives in `layer3_value/` — see `CLAUDE.md` for the cross-layer dependency note.
 
 **Scoring Formula (LinUCB — Li et al. 2010 WWW)**
 
@@ -188,18 +206,50 @@ The regret bound of an untrained contextual bandit is catastrophic when each "pu
 - MerchantApprovalGate enforcing human confirmation
 - Weekly planning with conflict detection
 
-### Phase 2 — Activation
-- Real LLM API integration for merchant copy rendering
-- External write APIs for Shopline and ad platform execution
-- Multi-merchant BenchmarkEngine with peer comparison data
-- Web Dashboard with one-click approval workflow
-- ImpactCalculator upgraded with WSM outcome history (confidence scales with data)
-- Performance billing: 10% of outcome_delta
+### Phase 2 — Activation (First Paying Customers + Knowledge Layer)
 
-### Phase 3 (6–12 months) — Learning
-- LinUCB bandit activation (requires 6 months of action_log with outcomes)
-- Holdout-based billing validation
-- Shopline ecosystem embed + REST API (Phase 3 delivery)
+Two parallel tracks that must converge before Phase 3.
+
+**Track A · Commercial Activation** *(blocks first paying customer)*
+- Shopline data connector: orders, inventory, catalog → real MSM signal computation
+- LLM API integration: replace DeterministicRenderer with real merchant copy
+- Web Dashboard + one-click approval workflow (was_executed transitions from False → True)
+- Shopline write API: execute approved actions (retention discounts, reminder campaigns)
+- ImpactCalculator upgraded: as WSM outcomes accumulate, confidence scales above 30% → RECOMMENDATION cards auto-promoted
+- Multi-merchant BenchmarkEngine: peer comparison once 2+ merchants in production
+- Performance billing activation: 10% of outcome_delta (requires 30-day reward cycle)
+
+**Track B · KG Knowledge Layer** *(partner-dependent, parallel to Track A)*
+- Partner Playbook YAML translation: domain expert content → typed graph facts in `playbook_registry`
+- L3 physical sub-module split: `pipeline.py` decomposed into 5 discrete files matching L3.1–L3.5
+- Multi-merchant test fixture: deterministic multi-brand signal sets for regression testing
+- `DecisionFeatureVector` wired into scoring: replaces raw `signals` dict as bandit context contract
+
+*Track B has no hard dependency on Track A — it advances as partner content is delivered.*
+
+### Phase 3 (6–12 months) — Learning at Scale
+
+Prerequisites: Track A complete (real execution data), 6+ months of action_log with outcomes.
+
+**Signal Completeness**
+- Meta Ads connector: campaign spend, ROAS, CPM → real acquisition dimension signals
+- GA4 connector: session CVR, funnel drop-off → real conversion dimension signals
+- `DecisionFeatureVector` fully populated from live connectors (no more benchmark fallbacks)
+
+**Learning Fabric**
+- WSM table split: single `wsm_transitions_v3` → 4 tables (Decision Log / Execution Log / Outcome Log / Feature History)
+- Offline evaluation framework: backtesting pipeline, holdout-based validation, counterfactual replay
+- LinUCB bandit activation: `u_ucb` term goes live once arm pull count crosses significance threshold
+- CUSUM drift detector on MSM state transition matrix (non-stationarity guard)
+
+**KG Completion**
+- Document compiler: partner domain documents → three-way split (graph facts → KG / policy candidates → policy bundle / retrieval chunks → renderer)
+- Evidence graph: metric shift → action support links (which signal triggered which candidate)
+- `CorrelatedCandidate` typed Pydantic model (replaces dict in CrossModuleCorrelator output)
+
+**Scaling**
+- Shopline ecosystem embed + REST API
+- Holdout-based billing validation (outcome_delta attribution audited against control group)
 
 ## What Is NOT Yet Implemented
 
