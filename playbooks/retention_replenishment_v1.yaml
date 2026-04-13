@@ -32,6 +32,7 @@ actions:
     type: REMINDER
     priority: 1
     description: "Send replenishment reminder before any discount"
+    expected_utility: 0.07  # stub — partner to replace with brand-specific prior
     # TODO: Define action parameters
 
   - id: DISCOUNT_LAST_RESORT
@@ -40,6 +41,7 @@ actions:
     prerequisites:
       - "REMINDER_FIRST was sent and no response within 7d"
     description: "Offer discount only after reminder fails"
+    expected_utility: 0.12  # stub — partner to replace with brand-specific prior
     # TODO: Define discount parameters and constraints
 
 constraints:

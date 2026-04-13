@@ -32,6 +32,7 @@ actions:
   - id: REDUCE_DISCOUNT_DEPTH
     type: OFFER_OPTIMIZATION
     description: ""
+    expected_utility: 0.05  # stub — partner to replace with brand-specific prior
 
 constraints:
   - margin_floor: true

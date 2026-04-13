@@ -1,0 +1,104 @@
+# ── Meta-Pattern: Conversion — Subscription Rate Mix Dilution ────────────────
+# Layer 1 (platform-level) [ADR-0011]
+# RULE: Zero hardcoded threshold numbers. All thresholds use ${thresholds.key}.
+# ─────────────────────────────────────────────────────────────────────────────
+
+meta_pattern:
+  id: conversion_subscription_mix
+  module: conversion
+  version: "1.0"
+  tags: [subscription_rate, mix_dilution, measurement_artifact]
+  reusable: true
+  description: >
+    Detects when aggregate subscription rate is distorted by SKU mix or
+    channel mix, rather than a universal funnel problem. Prevents misdiagnosis
+    that would trigger unnecessary sitewide subscription flow changes.
+
+triggers:
+  - name: subscription_rate_weak
+    msm_state: WATCH
+    condition: "subscription_rate_pop_delta < ${thresholds.sub_rate_alert_pct}"
+    metric: subscription_rate_pop_delta
+
+  - name: subscription_rate_declining
+    msm_state: DEGRADING
+    condition: "subscription_rate_pop_delta < ${thresholds.sub_rate_critical_pct}"
+    metric: subscription_rate_pop_delta
+
+analysis_path:
+  - step: check_sku_concentration
+    description: "Check if a single SKU accounts for a disproportionate share of orders"
+    data_source: order_table
+    output_metric: top_sku_order_share
+    decision_gate: "top_sku_order_share > ${thresholds.sku_concentration_threshold}"
+
+  - step: compute_sku_sub_rates
+    description: "Pull subscription_order_count and total_order_count by SKU"
+    data_source: order_table
+    output_metric: per_sku_subscription_rate
+
+  - step: identify_diluting_sku
+    description: "Rank SKUs by (order_volume × sub_rate_gap). Top SKU with low sub rate is the diluter."
+    derived_metric: sku_sub_rate_gap
+
+  - step: exclude_nonsubscribable_channel
+    description: >
+      Remove structurally non-subscribable channel orders (e.g. ShopCash, marketplace)
+      from the denominator before diagnosis. These channels cannot subscribe by design.
+    data_source: order_table
+    output_metric: channel_adjusted_subscription_rate
+
+  - step: compare_adjusted_vs_reported
+    description: >
+      Compute delta between adjusted sub rate and reported sub rate.
+      Delta > threshold confirms mix diagnosis (not funnel problem).
+    decision_gate: "adjusted_vs_reported_delta_pp > ${thresholds.mix_diagnosis_min_delta_pp}"
+
+root_cause_type: mix_problem  # also covers: measurement_artifact (ShopCash case)
+
+actions:
+  - id: DIAGNOSE_MIX
+    type: DIAGNOSTIC
+    description: >
+      Do NOT redesign the sitewide subscription experience immediately.
+      Segment by SKU and channel first. Identify the diluting product or
+      non-subscribable channel. Address at that level, not sitewide.
+    expected_utility_basis:
+      business_logic: >
+        Prevents engineering cost of sitewide subscription redesign triggered
+        by a false signal. Directs fix at correct lever (product mix or channel
+        budget) rather than wrong lever (funnel redesign).
+      gmv_lift_formula: >
+        prevented_misdiagnosis_cost / monthly_gmv + sub_rate_recovery_pct × ltv_multiplier
+    requires_approval: false
+    rollback_available: false
+
+  - id: FIX_DENOMINATOR
+    type: MEASUREMENT_FIX
+    description: >
+      Recalculate KPI with correct denominator before taking action.
+      Exclude structurally non-subscribable orders from the subscription
+      rate denominator. If adjusted rate normalizes, reduce the
+      non-subscribable channel budget rather than changing the funnel.
+    expected_utility_basis:
+      business_logic: >
+        Correct measurement enables correct budget allocation decision.
+        Reduces spend on low-quality customer acquisition channels.
+      gmv_lift_formula: >
+        reallocated_budget × efficiency_improvement_pct / monthly_gmv
+    requires_approval: false
+    rollback_available: false
+
+evidence_refs_template:
+  - "Subscription rate reported: ${metrics.subscription_rate_pop_delta} WoW delta"
+  - "Top SKU order share: ${metrics.top_sku_order_share} of total orders"
+  - "Channel adjusted rate delta vs reported: ${metrics.adjusted_vs_reported_delta_pp} pp"
+
+constraints:
+  attribution_window_days: 0  # Conversion = instant attribution
+  applies_hard_constraints: []  # DIAGNOSTIC/MEASUREMENT_FIX — no margin/inventory gate
+
+partner_clarifications_needed:
+  - "At what top-SKU order share does mix dilution become the primary suspect vs funnel issue?"
+  - "Which channels in this brand's stack are structurally non-subscribable?"
+  - "What sub rate delta (adjusted vs reported) is sufficient to confirm mix diagnosis?"

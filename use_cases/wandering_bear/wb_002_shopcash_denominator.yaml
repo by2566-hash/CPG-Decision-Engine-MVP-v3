@@ -1,0 +1,58 @@
+# ── Use Case: WB-002 ShopCash Orders Mechanically Depressed Subscription Rate ─
+# Single Source of Truth for all observed numbers [ADR-0011]
+# ─────────────────────────────────────────────────────────────────────────────
+
+use_case_id: wb_002
+brand: wandering_bear
+meta_pattern_ref: conversion_subscription_mix
+module: conversion
+observed_at: "2023-Q1"
+evidence_quality: high
+
+calibration_value_for:
+  - action_id: FIX_DENOMINATOR
+    gmv_lift_derivation:
+      method: diagnostic_prevention_value
+      prevented_action: "sitewide subscription funnel changes"
+      correct_action: "reduce ShopCash budget (customer-quality tradeoff unattractive)"
+      measurement_fix: "remove ShopCash non-sub orders from denominator"
+      gmv_lift_estimate: 0.05
+      note: >
+        Indirect GMV lift via correct budget reallocation. ShopCash budget
+        reduction frees spend for higher-quality customer acquisition.
+
+data_observed:
+  period: "2023-Q1"
+  mechanism: "ShopCash orders structurally CANNOT subscribe by design"
+  analysis:
+    step: "Isolated ShopCash-tagged orders from order table"
+    finding: "Once ShopCash non-sub orders removed from denominator, adjusted sub rate normalized"
+  subsequent_action: "Business reduced ShopCash budget (not subscription funnel changes)"
+
+analysis_executed:
+  - step: exclude_nonsubscribable_channel
+    channel: shopcash
+    finding: "ShopCash orders inflated non-subscription denominator mechanically"
+  - step: compare_adjusted_vs_reported
+    finding: "Adjusted sub rate normalized after ShopCash exclusion — confirms measurement artifact"
+
+action_taken: FIX_DENOMINATOR   # MEASUREMENT_FIX: correct KPI before acting
+root_cause_confirmed: measurement_artifact
+
+counterfactual: >
+  Without denominator correction, rising ShopCash volume would have been
+  misread as subscription funnel degradation. Each ShopCash campaign launch
+  would trigger subscription funnel review, wasting diagnostic cycles.
+  The correct lever (ShopCash budget quality) would never be identified.
+
+outcome_value: >
+  Adjusted subscription performance normalized once ShopCash orders removed
+  from calculation. Business reduced ShopCash budget rather than making
+  broader subscription changes. Measurement protocol established:
+  always check for structurally non-subscribable channels before diagnosing
+  subscription rate movements.
+
+partner_clarification_status:
+  resolved:
+    - question: "Which channels are structurally non-subscribable for WB?"
+      answer: "ShopCash — confirmed cannot subscribe by platform design"

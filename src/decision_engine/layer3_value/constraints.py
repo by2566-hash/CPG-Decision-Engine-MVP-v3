@@ -23,7 +23,20 @@ from __future__ import annotations
 
 import logging
 
+from ..contracts import PolicyDecision
+
 log = logging.getLogger(__name__)
+
+# Violation risk weights — each constraint type carries a different penalty weight
+# in the β3·Risk scoring term. Severity reflects financial / operational impact.
+# These are safety calibrations, not operational thresholds (those live in config.py).
+_VIOLATION_WEIGHTS: dict[str, float] = {
+    "margin_floor": 3.0,            # financial safety — highest penalty
+    "inventory_gate": 2.5,          # operational safety — stock cannot be recovered
+    "incrementality": 2.0,          # ROI validity — discount without uplift is waste
+    "discount_last_resort": 1.5,    # process constraint — REMINDER must precede DISCOUNT
+    "cold_prospect_gate": 1.5,      # targeting constraint — no discount to strangers
+}
 
 # Post-discount margin floor — CPG absolute minimum (CLAUDE.md)
 _MARGIN_FLOOR = 0.15
@@ -83,11 +96,12 @@ class ConstraintEngine:
         candidate: dict,
         signals: dict,
         policy: dict,
-    ) -> tuple[bool, list[str]]:
-        """Run all 6 CPG hard constraints in order.
+    ) -> PolicyDecision:
+        """Run all 6 CPG hard constraints in order. Returns PolicyDecision.
 
-        Returns (all_passed: bool, violations: list[str]).
         Violation format: "constraint_name:detail".
+        risk_penalty is a weighted sum — violation severity encoded by type,
+        so margin_floor (3.0) outweighs cold_prospect_gate (1.5) in scoring.
 
         For all constraints: if required signal is missing, PASS with logged warning.
         Phase 1: incomplete signals must not block all recommendations.
@@ -126,7 +140,19 @@ class ConstraintEngine:
         if v:
             violations.append(v)
 
-        return (len(violations) == 0, violations)
+        eligible = len(violations) == 0
+        risk_penalty = sum(
+            _VIOLATION_WEIGHTS.get(v.split(":")[0], 1.0) for v in violations
+        )
+
+        return PolicyDecision(
+            eligible=eligible,
+            hard_reject=not eligible,
+            risk_penalty=risk_penalty,
+            violations=violations,
+            requires_approval=False,   # approval governed by MerchantApprovalGate
+            rollback_required=True,    # every write action has 48h undo window
+        )
 
     # ── Individual constraint checks ─────────────────────────────────────
 
@@ -287,11 +313,14 @@ class ConstraintEngine:
     ) -> float:
         """Compute Risk(Constraints) for the β3·Risk scoring term.
 
-        Each hard constraint violation contributes 1.0 to the risk score.
+        Returns PolicyDecision.risk_penalty — weighted sum of violations.
         Returns 0.0 when all constraints pass (most common case in Phase 1).
 
         Used as the authoritative source for Risk(Constraints) in:
           Score = β1·U_base + β2·U_ucb − β3·Risk(Constraints)
+
+        Prefer consuming PolicyDecision.risk_penalty directly when
+        check_all() has already been called (avoids duplicate evaluation).
         """
-        _, violations = self.check_all(candidate, signals, policy)
-        return float(len(violations))
+        pd = self.check_all(candidate, signals, policy)
+        return pd.risk_penalty

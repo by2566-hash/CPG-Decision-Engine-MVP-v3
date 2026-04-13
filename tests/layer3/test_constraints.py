@@ -1,15 +1,16 @@
 # ── Layer 3 Tests · CPG Hard Constraints ─────────────────────────────────
-# Tests for ConstraintEngine.check_all(candidate, signals, policy).
-# Covers all 6 constraints, Phase 1 missing-signal behaviour, and pipeline
-# integration (constraints_result is real, not stub).
+# Tests for ConstraintEngine.check_all() → PolicyDecision.
+# Covers all 6 constraints, Phase 1 missing-signal behaviour, pipeline
+# integration (constraints_result is real PolicyDecision, not a stub),
+# and weighted risk_penalty values.
 # ───────────────────────────────────────────────────────────────────────────
 import logging
 from datetime import datetime, timezone
 
 import pytest
 
-from src.decision_engine.layer3_value.constraints import ConstraintEngine
-from src.decision_engine.contracts import MerchantStateVector
+from src.decision_engine.layer3_value.constraints import ConstraintEngine, _VIOLATION_WEIGHTS
+from src.decision_engine.contracts import MerchantStateVector, PolicyDecision
 
 _POLICY = {}  # policy param not yet used — placeholder for future extensibility
 
@@ -45,28 +46,41 @@ def full_signals():
     }
 
 
+# ── Return type ───────────────────────────────────────────────────────────
+
+
+def test_check_all_returns_policy_decision(engine, discount_candidate, full_signals):
+    """check_all() must return a PolicyDecision instance."""
+    pd = engine.check_all(discount_candidate, full_signals, _POLICY)
+    assert isinstance(pd, PolicyDecision)
+    assert pd.eligible is True
+    assert pd.hard_reject is False
+    assert pd.risk_penalty == 0.0
+    assert pd.violations == []
+    assert pd.rollback_required is True
+
+
 # ── Margin floor ──────────────────────────────────────────────────────────
 
 
 def test_margin_floor_blocks_loss_making_discount(engine, discount_candidate):
     """Discount leaving post-margin < 0.15 must be blocked."""
     # 0.20 - 0.10 = 0.10 < 0.15
-    passed, violations = engine.check_all(
-        discount_candidate, {"margin_pct": 0.20}, _POLICY
-    )
-    assert not passed
-    assert any("margin_floor" in v for v in violations)
+    pd = engine.check_all(discount_candidate, {"margin_pct": 0.20}, _POLICY)
+    assert not pd.eligible
+    assert pd.hard_reject is True
+    assert any("margin_floor" in v for v in pd.violations)
     # Violation encodes the actual post-margin value
-    assert any("0.10" in v for v in violations)
+    assert any("0.10" in v for v in pd.violations)
+    # Weighted penalty: margin_floor = 3.0
+    assert pd.risk_penalty == _VIOLATION_WEIGHTS["margin_floor"]
 
 
 def test_margin_floor_passes_when_margin_sufficient(engine, discount_candidate):
     """Discount leaving post-margin >= 0.15 must not be blocked."""
     # 0.40 - 0.10 = 0.30 >= 0.15
-    passed, violations = engine.check_all(
-        discount_candidate, {"margin_pct": 0.40}, _POLICY
-    )
-    assert not any("margin_floor" in v for v in violations)
+    pd = engine.check_all(discount_candidate, {"margin_pct": 0.40}, _POLICY)
+    assert not any("margin_floor" in v for v in pd.violations)
 
 
 # ── Discount last resort ──────────────────────────────────────────────────
@@ -74,24 +88,24 @@ def test_margin_floor_passes_when_margin_sufficient(engine, discount_candidate):
 
 def test_discount_last_resort_blocks_when_no_prior_reminder(engine, discount_candidate):
     """Discount without a prior REMINDER must be blocked."""
-    passed, violations = engine.check_all(
+    pd = engine.check_all(
         discount_candidate,
         {"last_action_type": "PUSH_NOTIFICATION", "days_since_last_action": 2},
         _POLICY,
     )
-    assert not passed
-    assert any("discount_last_resort" in v for v in violations)
-    assert any("no_prior_reminder" in v for v in violations)
+    assert not pd.eligible
+    assert any("discount_last_resort" in v for v in pd.violations)
+    assert any("no_prior_reminder" in v for v in pd.violations)
 
 
 def test_discount_last_resort_passes_when_reminder_was_sent(engine, discount_candidate):
     """Discount preceded by REMINDER within 7 days must pass."""
-    passed, violations = engine.check_all(
+    pd = engine.check_all(
         discount_candidate,
         {"last_action_type": "REMINDER", "days_since_last_action": 5},
         _POLICY,
     )
-    assert not any("discount_last_resort" in v for v in violations)
+    assert not any("discount_last_resort" in v for v in pd.violations)
 
 
 # ── Cold prospect gate ────────────────────────────────────────────────────
@@ -99,20 +113,16 @@ def test_discount_last_resort_passes_when_reminder_was_sent(engine, discount_can
 
 def test_cold_prospect_gate_blocks_first_time_visitor_discount(engine, discount_candidate):
     """customer_orders_count=0 must block discount actions."""
-    passed, violations = engine.check_all(
-        discount_candidate, {"customer_orders_count": 0}, _POLICY
-    )
-    assert not passed
-    assert any("cold_prospect_gate" in v for v in violations)
-    assert any("first_time_visitor" in v for v in violations)
+    pd = engine.check_all(discount_candidate, {"customer_orders_count": 0}, _POLICY)
+    assert not pd.eligible
+    assert any("cold_prospect_gate" in v for v in pd.violations)
+    assert any("first_time_visitor" in v for v in pd.violations)
 
 
 def test_cold_prospect_gate_passes_for_returning_customer(engine, discount_candidate):
     """customer_orders_count > 0 must allow discount actions."""
-    passed, violations = engine.check_all(
-        discount_candidate, {"customer_orders_count": 2}, _POLICY
-    )
-    assert not any("cold_prospect_gate" in v for v in violations)
+    pd = engine.check_all(discount_candidate, {"customer_orders_count": 2}, _POLICY)
+    assert not any("cold_prospect_gate" in v for v in pd.violations)
 
 
 # ── Incrementality ────────────────────────────────────────────────────────
@@ -120,20 +130,16 @@ def test_cold_prospect_gate_passes_for_returning_customer(engine, discount_candi
 
 def test_incrementality_blocks_when_below_threshold(engine, discount_candidate):
     """promo_incrementality < 0.30 must block discount."""
-    passed, violations = engine.check_all(
-        discount_candidate, {"promo_incrementality": 0.15}, _POLICY
-    )
-    assert not passed
-    assert any("incrementality" in v for v in violations)
-    assert any("0.150" in v for v in violations)
+    pd = engine.check_all(discount_candidate, {"promo_incrementality": 0.15}, _POLICY)
+    assert not pd.eligible
+    assert any("incrementality" in v for v in pd.violations)
+    assert any("0.150" in v for v in pd.violations)
 
 
 def test_incrementality_passes_when_above_threshold(engine, discount_candidate):
     """promo_incrementality >= 0.30 must allow discount."""
-    passed, violations = engine.check_all(
-        discount_candidate, {"promo_incrementality": 0.45}, _POLICY
-    )
-    assert not any("incrementality" in v for v in violations)
+    pd = engine.check_all(discount_candidate, {"promo_incrementality": 0.45}, _POLICY)
+    assert not any("incrementality" in v for v in pd.violations)
 
 
 # ── Missing signal — Phase 1 data gap ────────────────────────────────────
@@ -144,10 +150,12 @@ def test_missing_signal_passes_with_warning_not_blocks(
 ):
     """All constraints with missing signals must PASS (not block) and log a warning."""
     with caplog.at_level(logging.WARNING):
-        passed, violations = engine.check_all(discount_candidate, {}, _POLICY)
+        pd = engine.check_all(discount_candidate, {}, _POLICY)
 
     # Phase 1: missing signals → no violations (customer_orders_count defaults to 999)
-    assert violations == [], f"Expected no violations, got: {violations}"
+    assert pd.violations == [], f"Expected no violations, got: {pd.violations}"
+    assert pd.eligible is True
+    assert pd.risk_penalty == 0.0
     # Warnings logged for skipped constraints
     warning_text = caplog.text
     assert "margin_pct not available" in warning_text or "margin_floor skipped" in warning_text
@@ -164,12 +172,13 @@ def test_non_discount_action_passes_all_constraints(engine, non_discount_candida
         "days_since_last_action": 30,
         "inventory_days_p10": 1.0,
     }
-    passed, violations = engine.check_all(non_discount_candidate, signals, _POLICY)
-    assert passed
-    assert violations == []
+    pd = engine.check_all(non_discount_candidate, signals, _POLICY)
+    assert pd.eligible
+    assert pd.violations == []
+    assert pd.risk_penalty == 0.0
 
 
-# ── Multiple violations ───────────────────────────────────────────────────
+# ── Multiple violations + weighted risk_penalty ───────────────────────────
 
 
 def test_check_all_returns_all_violations_not_just_first(engine, discount_candidate):
@@ -183,12 +192,35 @@ def test_check_all_returns_all_violations_not_just_first(engine, discount_candid
         "days_since_last_action": 1,
         "inventory_days_p10": 10.0,
     }
-    passed, violations = engine.check_all(discount_candidate, signals, _POLICY)
-    assert not passed
-    assert len(violations) >= 3, f"Expected >= 3 violations, got: {violations}"
-    assert any("margin_floor" in v for v in violations)
-    assert any("cold_prospect_gate" in v for v in violations)
-    assert any("incrementality" in v for v in violations)
+    pd = engine.check_all(discount_candidate, signals, _POLICY)
+    assert not pd.eligible
+    assert len(pd.violations) >= 3, f"Expected >= 3 violations, got: {pd.violations}"
+    assert any("margin_floor" in v for v in pd.violations)
+    assert any("cold_prospect_gate" in v for v in pd.violations)
+    assert any("incrementality" in v for v in pd.violations)
+
+
+def test_weighted_risk_penalty_higher_than_count(engine, discount_candidate):
+    """risk_penalty uses violation weights, not simple count.
+
+    margin_floor (3.0) + cold_prospect_gate (1.5) = 4.5, not 2.0.
+    """
+    signals = {
+        "margin_pct": 0.05,          # triggers margin_floor (weight 3.0)
+        "customer_orders_count": 0,  # triggers cold_prospect_gate (weight 1.5)
+        "promo_incrementality": 0.50,
+        "last_action_type": "REMINDER",
+        "days_since_last_action": 1,
+        "inventory_days_p10": 10.0,
+    }
+    pd = engine.check_all(discount_candidate, signals, _POLICY)
+    expected_penalty = (
+        _VIOLATION_WEIGHTS["margin_floor"]
+        + _VIOLATION_WEIGHTS["cold_prospect_gate"]
+    )
+    assert pd.risk_penalty == pytest.approx(expected_penalty), (
+        f"Expected weighted penalty {expected_penalty}, got {pd.risk_penalty}"
+    )
 
 
 # ── Attribution window metadata ───────────────────────────────────────────
@@ -203,8 +235,8 @@ def test_attribution_window_set_on_candidate(engine, discount_candidate, full_si
 
 def test_attribution_window_never_blocks(engine, discount_candidate, full_signals):
     """attribution_window is metadata-only — never adds a violation."""
-    passed, violations = engine.check_all(discount_candidate, full_signals, _POLICY)
-    assert not any("attribution" in v for v in violations)
+    pd = engine.check_all(discount_candidate, full_signals, _POLICY)
+    assert not any("attribution" in v for v in pd.violations)
 
 
 # ── Inventory gate ────────────────────────────────────────────────────────
@@ -215,26 +247,28 @@ def test_inventory_gate_blocks_discount_when_stock_critical(engine, discount_can
     signals = {"inventory_days_p10": 3.0, "margin_pct": 0.40,
                "last_action_type": "REMINDER", "days_since_last_action": 2,
                "promo_incrementality": 0.50, "customer_orders_count": 5}
-    passed, violations = engine.check_all(discount_candidate, signals, _POLICY)
-    assert not passed
-    assert any("inventory_gate" in v for v in violations)
-    assert any("3.0" in v for v in violations)
+    pd = engine.check_all(discount_candidate, signals, _POLICY)
+    assert not pd.eligible
+    assert any("inventory_gate" in v for v in pd.violations)
+    assert any("3.0" in v for v in pd.violations)
+    # inventory_gate weight = 2.5
+    assert pd.risk_penalty == pytest.approx(_VIOLATION_WEIGHTS["inventory_gate"])
 
 
 def test_inventory_gate_passes_when_stock_sufficient(engine, discount_candidate, full_signals):
     """inventory_days_p10 >= 5 must not block discount."""
-    passed, violations = engine.check_all(discount_candidate, full_signals, _POLICY)
-    assert not any("inventory_gate" in v for v in violations)
+    pd = engine.check_all(discount_candidate, full_signals, _POLICY)
+    assert not any("inventory_gate" in v for v in pd.violations)
 
 
 # ── Pipeline integration ──────────────────────────────────────────────────
 
 
 def test_pipeline_uses_real_constraints_not_stub():
-    """pipeline._generate_candidates must wire real ConstraintEngine, not (True, []) stub.
+    """pipeline._generate_candidates must wire real ConstraintEngine → PolicyDecision.
 
-    A cold-prospect signal (customer_orders_count=0) must produce violations
-    on any generated discount candidates.
+    A cold-prospect signal (customer_orders_count=0) must produce PolicyDecision
+    with eligible=False on any generated discount candidates.
     """
     from src.decision_engine import layer4_serving as serving
     from src.decision_engine.layer4_serving import pipeline
@@ -271,7 +305,7 @@ def test_pipeline_uses_real_constraints_not_stub():
 
     candidates = pipeline._generate_candidates(msm_state, signals, policy)
 
-    # Every discount candidate must have real violations, not (True, [])
+    # Every discount candidate must have a real PolicyDecision with eligible=False
     discount_candidates = [
         c for c in candidates if "DISCOUNT" in c.get("action_id", "").upper()
     ]
@@ -280,11 +314,16 @@ def test_pipeline_uses_real_constraints_not_stub():
     for c in discount_candidates:
         result = c.get("constraints_result")
         assert result is not None, f"constraints_result missing on {c['action_id']}"
-        passed, violations = result
-        assert not passed, (
-            f"{c['action_id']} should be blocked for cold prospect "
-            f"(customer_orders_count=0) but got passed=True"
+        assert isinstance(result, PolicyDecision), (
+            f"Expected PolicyDecision, got {type(result)} for {c['action_id']}"
         )
-        assert any("cold_prospect_gate" in v for v in violations), (
-            f"Expected cold_prospect_gate violation, got: {violations}"
+        assert not result.eligible, (
+            f"{c['action_id']} should be blocked for cold prospect "
+            f"(customer_orders_count=0) but got eligible=True"
+        )
+        assert any("cold_prospect_gate" in v for v in result.violations), (
+            f"Expected cold_prospect_gate violation, got: {result.violations}"
+        )
+        assert result.risk_penalty > 0, (
+            f"Expected risk_penalty > 0 for blocked candidate, got: {result.risk_penalty}"
         )

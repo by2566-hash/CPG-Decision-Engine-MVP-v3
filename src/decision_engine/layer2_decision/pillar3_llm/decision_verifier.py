@@ -17,6 +17,7 @@ import logging
 
 from ...contracts import MerchantStateVector, VerificationChain, VerificationStep
 from ...layer1_msm.state_definitions import DimensionState
+from ...layer3_value.constraints import _MARGIN_FLOOR  # single source of truth (ADR-0001)
 
 log = logging.getLogger(__name__)
 
@@ -27,9 +28,6 @@ _MODULE_DIMENSION_MAP: dict[str, str] = {
     "conversion": "conversion",
     "promotion": "promotion",
 }
-
-# Margin floor from CLAUDE.md: post-discount margin >= 0.15
-_MARGIN_FLOOR = 0.15
 
 # Minimum inventory days for discount actions
 _INVENTORY_MIN_DAYS = 5

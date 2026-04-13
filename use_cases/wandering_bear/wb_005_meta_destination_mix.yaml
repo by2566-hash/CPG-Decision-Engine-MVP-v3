@@ -1,0 +1,87 @@
+# ── Use Case: WB-005 Meta Traffic Routing to IG/FB Shop Raised CAC ───────────
+# Single Source of Truth for all observed numbers [ADR-0011]
+# Primary evidence for: acquisition_cac_channel_mix brand binding PAUSE_CHANNEL prior
+# ─────────────────────────────────────────────────────────────────────────────
+
+use_case_id: wb_005
+brand: wandering_bear
+meta_pattern_ref: acquisition_cac_channel_mix
+module: acquisition
+observed_at: "2023-04"
+evidence_quality: high
+
+calibration_value_for:
+  - action_id: PAUSE_CHANNEL
+    gmv_lift_derivation:
+      method: cac_improvement_to_gmv_lift
+      cac_before: 54.79          # March 2023 sitewide CAC
+      cac_after: 45.25           # April 2023 sitewide CAC (post-action)
+      cac_improvement_pct: 0.174  # (54.79 - 45.25) / 54.79
+      meta_cpa_after: 45.32       # Meta-specific CPA recovered in April
+      monthly_new_customers_est: 2290
+      aov_est: 47.0
+      monthly_gmv_est: 150000     # estimated from available data
+      gmv_lift_estimate: 0.12
+      derivation: >
+        0.174 × (2290 × 47 / 150000) = 0.174 × 0.717 = 0.125 → rounded to 0.12
+        Conservative: actual monthly_gmv may be higher → lift fraction lower.
+        Confidence: high (specific before/after CAC confirmed over full period).
+
+data_observed:
+  period: "March 2023 → April 2023"
+
+  problem_signal: >
+    CAC was rising. Initial risk was to blame testing, creative fatigue, or
+    broad Meta underperformance. Actual root cause was destination mix inside Meta.
+
+  diagnosis_path:
+    step_1: "Split testing vs non-testing spend → testing mix alone did not explain gap"
+    step_2: "Segment funnel metrics by channel → Meta showed anomaly"
+    step_3: >
+      Within Meta, separate website vs on-Meta (IG/FB Shop) destination performance.
+      Meta content views and Meta adds-to-carts SPIKED → confirmed more traffic
+      routed to IG/FB Shop rather than website. IG/FB Shop observably lower converting.
+
+  before_action:
+    period: "March 2023"
+    cac_sitewide: 54.79
+    meta_destination_issue: "IG/FB Shop receiving disproportionate traffic share"
+    meta_content_views: "spiked (on-platform engagement up, website CVR flat)"
+
+  after_action:
+    period: "April 2023"
+    cac_sitewide: 45.25
+    meta_cpa: 45.32
+    action_taken_detail: "Turned off Meta Shop destinations, routed traffic to website"
+
+  cac_recovery: 9.54             # absolute: $54.79 - $45.25
+  cac_improvement_pct: 0.174     # 17.4%
+
+action_taken: PAUSE_CHANNEL   # CHANNEL_CONTROL: disable IG/FB Shop, route to website
+root_cause_confirmed: channel_routing
+
+counterfactual: >
+  Without destination routing diagnosis, the team would have attributed the
+  CAC spike to broad Meta account-level inefficiency (creative fatigue, audience
+  saturation, or testing spend leakage). Actions would have been: pause tests,
+  rotate creatives, reduce Meta budget. None of these address destination routing.
+  CAC would have remained elevated or worsened as IG/FB Shop traffic share grew.
+
+outcome_value: >
+  Root cause identified as destination mix inside Meta (not broad media problem).
+  Removing Meta Shop destinations brought Meta CPA to $45.32 and sitewide CAC
+  to $45.25 in April vs $54.79 in March — a $9.54 / 17.4% CAC recovery.
+  Pattern established: on-platform content view spike + flat website CVR =
+  destination routing diagnostic signal. Not creative or audience problem.
+
+diagnostic_signal_fingerprint:
+  # The combination of signals that confirms this pattern — for future detection
+  - metric: meta_content_views_wow_delta
+    direction: spike_up
+    interpretation: "more traffic going to on-platform destinations"
+  - metric: checkout_cvr
+    direction: flat_or_stable
+    interpretation: "website is not the problem — destination is"
+  - metric: cac_7d_vs_baseline
+    direction: rising
+    interpretation: "overall CAC rising despite stable website performance"

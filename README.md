@@ -194,6 +194,51 @@ The regret bound of an untrained contextual bandit is catastrophic when each "pu
   (e.g., seasonality × margin sensitivity) is not captured in the current 
   feature space.
 
+## Phase 1 Status
+
+### Already in V3 (pre-governance session)
+- MerchantStateMachine + AlertEngine (L1)
+- PlaybookRegistry + PolicyPack validation (L2 KG pillar)
+- AnomalyDetector z-score proxy (L2 ML pillar, Phase 1)
+- DecisionVerifier + LLMRenderer + 5-Gate Bouncer (L2 Safety pillar)
+- ConstraintEngine (6 CPG hard constraints) + ImpactCalculator + MerchantApprovalGate + RollbackRegistry (L3)
+- pipeline.py Deep Plane (16-step) + fast_plane.py + redis_cache.py + rollout.py (L4)
+- wsm_client.py + reward_backfill.py + telemetry_audit_logger.py (L5 stubs)
+
+### Added in V3.5 contract upgrade session (2026-04-09, Part 1)
+- `PolicyDecision` unified interface replacing `(bool, list[str])` + separate float
+- `DecisionFeatureVector`, `DecisionState` typed contracts
+- `RawCandidate`, `ScoredCandidate` Pydantic models with `frozen=True`
+- Weighted `risk_penalty` in `ConstraintEngine` (`_VIOLATION_WEIGHTS` dict)
+- `scoring.py` consumes `PolicyDecision` directly — eliminated duplicate `check_all()` call
+
+### Added in V3.5 governance session (2026-04-09, Part 2)
+- ADR framework with 8 ADRs (6 retroactive + ADR-0007 cross-layer + ADR-0008 LinUCB)
+- `docs/PHASE_ROADMAP.md` — single source of truth for Phase 1/2/3 work
+- `docs/EVOLUTION_GUIDE.md` — 5-step change process for future contributors
+- `tests/contracts/` — 5 contract test files enforcing typed object invariants
+- `tests/architecture/test_architecture_invariants.py` — 8 invariant tests detecting drift
+- `feature_plane/builder.py` — `FeatureBuilder` implementation, wired into `pipeline.py`
+- `fixtures/brightskin/` + `tests/e2e/test_brightskin_walkthrough.py` + `scripts/demo_brightskin.py`
+- `CLAUDE.md` / `README.md` cross-references and governance section
+
+**Test suite**: 314 tests, all green (starting baseline: 161 tests).
+
+### Phase 1 Scope Limitations (by design, not gaps)
+Phase 1 intentionally uses stub connectors and template rendering. The following are
+**Phase 2 Track A deliverables**, not Phase 1 gaps:
+
+- Real Shopline data connector — Phase 2 Track A
+- Real LLM API integration — Phase 2 Track A
+- Real external write APIs (discounts, campaigns) — Phase 2 Track A
+
+Phase 1 is considered complete when architecture, governance, contracts, and tests
+are stable. Shadow mode (`was_executed=False`) is a Phase 1 feature, not a
+limitation. No real merchant data or external API calls are required for Phase 1
+validation.
+
+---
+
 ## Phase Roadmap
 
 ### Phase 1 — Active Now
@@ -251,13 +296,17 @@ Prerequisites: Track A complete (real execution data), 6+ months of action_log w
 - Shopline ecosystem embed + REST API
 - Holdout-based billing validation (outcome_delta attribution audited against control group)
 
-## What Is NOT Yet Implemented
+## Phase 2 Track A Deliverables (Not Phase 1 Scope)
 
-- **3 new Playbook YAMLs** — content pending from partner (current playbooks are structural templates)
-- **Real LLM API connection** — DeterministicRenderer active in Phase 1; LLM adapter is a stub
-- **External write APIs** — Shopline and Ad platform connectors are stubs (Phase 2)
-- **Real data connectors** — Shopline/Meta Ads/GA4 connectors are stubs (Phase 1 milestone)
-- **Multi-merchant BenchmarkEngine** — needs peer data from production (Phase 2)
+The following are intentionally deferred to Phase 2 Track A. They are not Phase 1
+gaps — Phase 1 validates architecture and governance using stubs and deterministic
+templates. Real data and APIs activate at Phase 2.
+
+- **Real Shopline data connector** — orders/inventory/catalog → real MSM signal computation
+- **Real LLM API connection** — DeterministicRenderer active in Phase 1; LLM API activates Phase 2
+- **External write APIs** — Shopline + Ad platform connectors are stubs (Phase 2)
+- **Multi-merchant BenchmarkEngine** — needs peer data from ≥2 production merchants (Phase 2)
+- **3 new Playbook YAMLs** — content pending from partner (structural templates in Phase 1)
 
 ## V0/V2 → V3 Key Changes
 

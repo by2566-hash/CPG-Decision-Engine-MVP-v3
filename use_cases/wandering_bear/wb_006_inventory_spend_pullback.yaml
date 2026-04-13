@@ -1,0 +1,86 @@
+# ── Use Case: WB-006 Inventory-Driven Spend Pullback Improved CAC ────────────
+# Single Source of Truth for all observed numbers [ADR-0011]
+# meta_pattern_ref: acquisition_efficiency_v1 (existing stub — to be filled)
+# ─────────────────────────────────────────────────────────────────────────────
+
+use_case_id: wb_006
+brand: wandering_bear
+meta_pattern_ref: acquisition_efficiency_v1   # existing stub playbook
+module: acquisition
+observed_at: "2023-01"
+evidence_quality: high
+
+calibration_value_for:
+  - action_id: PAUSE_CHANNEL
+    gmv_lift_derivation:
+      method: cac_improvement_to_gmv_lift
+      cac_before: 46.97
+      cac_after: 43.23
+      cac_improvement_pct: 0.080    # 8.0% = ($46.97 - $43.23) / $46.97
+      spend_reduction_pct: 0.059    # 5.89% spend decline over same window
+      gmv_lift_estimate: 0.04
+      derivation_note: >
+        8% CAC improvement on relatively small spend reduction (5.89%).
+        Conservative estimate: 4% GMV lift because pullback scope was modest
+        (~$350 total across FB/TikTok/Google). Large-scale application
+        could yield proportionally higher improvement.
+
+data_observed:
+  slack_action_date: "2023-01-09"
+  period: "7-day comparison window around action date"
+
+  trigger_context:
+    pm_share_of_meta_spend: 0.71    # PM flavor = 71% of Meta spend at time of pullback
+    inventory_concern: "PM inventory tightening — ops indicated limited runway"
+    risk: "Continued high PM spend against constrained inventory → CAC would worsen as availability decreases"
+
+  spend_changes:
+    facebook_reduction: 150         # USD
+    tiktok_reduction: 150           # USD
+    google_reduction: 50            # USD
+    total_reduction: 350            # USD
+    spend_change_pct: -0.059        # 5.89% spend decline
+
+  cac_results:
+    cac_7d_before: 46.97
+    cac_7d_after: 43.23
+    cac_absolute_improvement: 3.74
+    cac_improvement_pct: 0.080      # 8.0%
+
+analysis_executed:
+  - step: quantify_constrained_sku_share
+    finding: "PM = 71% of Meta spend — highly concentrated in constrained SKU"
+  - step: check_inventory_ops
+    finding: "Ops confirmed limited PM inventory runway; weekend/delayed update risk noted"
+  - step: preemptive_intervention
+    finding: >
+      Acted before inventory pressure fully manifested in CAC.
+      Pullback reduced PM overexposure without stopping acquisition entirely.
+
+action_taken: PAUSE_CHANNEL   # BUDGET_ADJUST: proactive pullback, not full channel pause
+root_cause_confirmed: budget_allocation   # ops-aware budgeting
+
+key_principle: >
+  When one SKU accounts for a dominant share of paid spend (>50-60%) and
+  inventory is tightening for that SKU, do not wait for efficiency to fully
+  break before intervening. A practical threshold: single constrained SKU
+  dominates spend AND ops dashboard shows limited inventory runway.
+  Preemptive pullback costs less than reactive recovery.
+
+counterfactual: >
+  Without preemptive pullback, PM overexposure into tightening inventory would
+  have driven CAC higher as: (1) PM ads converted to increasingly unavailable
+  product, (2) frustrated customers saw out-of-stock pages, (3) retargeting
+  costs increased for non-converting impressions. CAC would have worsened
+  faster than the natural inventory constraint alone.
+
+outcome_value: >
+  CAC improved $3.74 (8.0%) while spend declined only 5.89%.
+  Efficiency improved despite lower investment.
+  Overexposure to constrained PM flavor reduced.
+  Pattern: preemptive ops-aware spend management outperforms reactive adjustment.
+
+partner_clarification_status:
+  pending:
+    - question: "At what PM/constrained-SKU spend share does this trigger? Is 71% the right threshold, or lower?"
+    - question: "How do you define 'limited inventory runway' operationally? Days-of-supply < N?"

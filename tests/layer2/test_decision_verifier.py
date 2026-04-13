@@ -8,11 +8,15 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from src.decision_engine.contracts import MerchantStateVector
+from src.decision_engine.contracts import MerchantStateVector, PolicyDecision
 from src.decision_engine.layer2_decision.pillar3_llm.decision_verifier import (
     DecisionVerifier,
 )
 from src.decision_engine.layer2_decision.scoring import ScoringEngine
+
+# Shorthand for tests that only care about scoring logic, not constraint checking.
+# Explicitly marks constraints as passed — do not rely on scoring default behavior.
+_CONSTRAINTS_PASS = PolicyDecision(eligible=True, hard_reject=False, risk_penalty=0.0, violations=[])
 
 
 def _make_msv(
@@ -191,12 +195,14 @@ class TestScoringIntegration:
                 "module": "retention",
                 "urgency_score": 0.9,  # above 0.8 → gets boost
                 "pred": pred,
+                "constraints_result": _CONSTRAINTS_PASS,  # explicit pass — not a default
             },
             {
                 "action_id": "SEND_REMINDER_LOW",
                 "module": "promotion",
                 "urgency_score": 0.3,  # below 0.8 → no boost
                 "pred": pred,
+                "constraints_result": _CONSTRAINTS_PASS,  # explicit pass — not a default
             },
         ]
         engine = ScoringEngine()

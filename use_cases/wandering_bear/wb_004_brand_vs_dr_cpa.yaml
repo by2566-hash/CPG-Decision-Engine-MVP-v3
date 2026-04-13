@@ -1,0 +1,76 @@
+# ── Use Case: WB-004 Blended CPA Worsened After Adding Brand Spend ───────────
+# Single Source of Truth for all observed numbers [ADR-0011]
+# ─────────────────────────────────────────────────────────────────────────────
+
+use_case_id: wb_004
+brand: wandering_bear
+meta_pattern_ref: acquisition_cac_channel_mix   # same meta-pattern family
+module: acquisition
+observed_at: "2023-Q1"
+evidence_quality: high
+
+calibration_value_for:
+  - action_id: REALLOCATE_BUDGET
+    gmv_lift_derivation:
+      method: cac_improvement_to_gmv_lift
+      dr_cpa_before: 43.09
+      dr_cpa_after: 38.00
+      dr_cpa_improvement_pct: 0.118          # 11.8%
+      dr_budget_fraction_of_total: 0.59      # DR spend / total spend
+      effective_gmv_lift: 0.07
+      derivation_note: >
+        DR CPA improved -11.8% ($43.09 → $38.00) despite blended CPA worsening.
+        DR accounts for ~59% of total budget (87k / 147k).
+        Effective GMV lift = 0.118 × 0.59 ≈ 0.07.
+        Value is in the diagnostic prevention: prevents incorrect DR optimization
+        triggered by misleading blended CPA metric.
+
+data_observed:
+  period_comparison: "before brand spend vs after brand spend launched"
+
+  before_brand_spend:
+    dr_spend: 41111.24
+    new_customers: 954
+    dr_cpa: 43.09
+
+  after_brand_spend:
+    dr_spend: 87018.16
+    brand_spend: 60914.95
+    total_spend: 147933.11
+    new_customers: 2290
+    dr_cpa: 38.00                # DR efficiency IMPROVED
+    blended_cpa: 64.60           # Blended WORSENED (brand spend added to numerator)
+
+  key_insight: >
+    blended_cpa = (dr_spend + brand_spend) / new_customers
+    If brand spend is added but attributed customers don't show up in last-click,
+    blended CPA mechanically worsens even when DR is improving.
+
+analysis_executed:
+  - step: split_testing_vs_nontesting
+    finding: "Not applicable — this is brand vs DR split, not testing mix"
+  - step: segment_by_channel
+    finding: "DR channel: CPA improved $43 → $38. Brand channel: no last-click attribution expected."
+  - step: compare_blended_vs_dr_cpa
+    finding: "Blended CPA $64.60 is misleading. DR CPA $38.00 is the correct efficiency signal."
+
+action_taken: REALLOCATE_BUDGET   # DIAGNOSTIC: separate DR from brand before any optimization
+root_cause_confirmed: measurement_artifact
+
+reusable_rule: >
+  When brand spend is layered on top of a DR engine, ALWAYS split DR CPA from
+  blended CPA before diagnosing what changed. If blended CPA worsens while DR
+  CPA improves, do not conclude DR performance deteriorated. Evaluate brand
+  separately from DR — different efficiency lenses, different optimization levers.
+
+counterfactual: >
+  Without the DR/brand split, the team would have interpreted blended CPA
+  worsening ($43 → $65) as DR underperformance and triggered DR budget cuts
+  or creative rotation. DR would have been incorrectly optimized in the
+  wrong direction — reducing spend at a time when it was actually becoming
+  more efficient.
+
+outcome_value: >
+  Established a durable measurement rule: brand and direct-response must
+  be interpreted through separate efficiency lenses. DR CPA improved -11.8%.
+  Brand spend evaluated separately on incremental lift, not last-click CPA.

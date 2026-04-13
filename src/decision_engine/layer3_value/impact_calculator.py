@@ -40,8 +40,11 @@ class ImpactCalculator:
             "PAUSE_CHANNEL":     {"cac_reduction_low": 0.08, "cac_reduction_mid": 0.15, "cac_reduction_high": 0.25},
         },
         "conversion": {
-            "REORDER_SHELF":  {"cvr_lift_low": 0.05, "cvr_lift_mid": 0.10, "cvr_lift_high": 0.18},
-            "BUNDLE_SUGGEST": {"aov_lift_low": 0.08, "aov_lift_mid": 0.15, "aov_lift_high": 0.22},
+            "REORDER_SHELF":    {"cvr_lift_low": 0.05, "cvr_lift_mid": 0.10, "cvr_lift_high": 0.18},
+            "BUNDLE_SUGGEST":   {"aov_lift_low": 0.08, "aov_lift_mid": 0.15, "aov_lift_high": 0.22},
+            # Subscription mix diagnostic actions (conversion_subscription_mix pattern)
+            "DIAGNOSE_MIX":     {"lift_pct_low": 0.04, "lift_pct_mid": 0.08, "lift_pct_high": 0.14},
+            "FIX_DENOMINATOR":  {"lift_pct_low": 0.02, "lift_pct_mid": 0.05, "lift_pct_high": 0.09},
         },
         "promotion": {
             "ROTATE_OFFER":  {"margin_lift_low": 0.02, "margin_lift_mid": 0.05, "margin_lift_high": 0.08},

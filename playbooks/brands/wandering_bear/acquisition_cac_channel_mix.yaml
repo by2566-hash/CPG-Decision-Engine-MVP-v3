@@ -1,0 +1,49 @@
+# ── Brand Binding: Wandering Bear × acquisition_cac_channel_mix ──────────────
+# Layer 2 (brand-level) [ADR-0011]
+# RULE: No raw evidence data here. Evidence lives in use_cases/wandering_bear/.
+# ─────────────────────────────────────────────────────────────────────────────
+
+brand: wandering_bear
+meta_pattern_ref: acquisition_cac_channel_mix
+binding_version: "1.0"
+
+entity_bindings:
+  primary_ad_platform: meta
+  on_platform_destinations: [ig_shop, fb_shop]  # destinations that caused CAC spike
+  website_destination: shopify_pdp              # higher-converting destination
+  diagnostic_signal: meta_content_views         # on-platform spike signal to watch
+
+thresholds:
+  cac_spike_ratio: 1.15                 # CAC >15% above 30d baseline → WATCH
+  cac_critical_ratio: 1.30              # CAC >30% above 30d baseline → DEGRADING
+  destination_cvr_gap_threshold: 0.85   # on-platform CVR < website × 0.85 → confirm routing
+  calibration_status: partner_prior
+  # WB observed: CAC rose to 1.26× baseline (Mar 2023) before action was taken
+  # Post-action: CAC returned to ~1.00× baseline within same period
+
+action_utility_priors:
+  PAUSE_CHANNEL:
+    # Case 5: Meta destination routing fix → CAC $54.79 → $45.25 (-17.4%)
+    gmv_lift_prior: 0.12
+    # Derivation: cac_improvement_to_gmv_lift
+    #   cac_improvement_pct = 0.174
+    #   monthly_new_customers = 2290, aov = $47, monthly_gmv ≈ $150k (est.)
+    #   = 0.174 × (2290 × 47 / 150000) ≈ 0.174 × 0.717 ≈ 0.12
+    confidence: 0.75               # high: specific before/after numbers confirmed
+    calibration_status: partner_prior
+    evidence_case: "wb_005"        # Meta destination mix case
+
+  REALLOCATE_BUDGET:
+    # Case 4: Brand vs DR CPA split — DR CPA improved -11.8% despite blended worsening
+    gmv_lift_prior: 0.07
+    # Derivation: cac_improvement_to_gmv_lift (DR efficiency only)
+    #   DR CPA improvement: $43.09 → $38.00 = -11.8%
+    #   ~11.8% DR efficiency gain → ~7% effective GMV lift (DR is ~60% of total budget)
+    confidence: 0.65
+    calibration_status: partner_prior
+    evidence_case: "wb_004"        # Brand vs DR CPA split case
+
+evidence_refs_template:
+  - "WB CAC 7d: ${metrics.cac_7d} vs 30d baseline: ${metrics.cac_baseline_30d}"
+  - "Meta on-platform content view delta: ${metrics.meta_content_views_wow_delta}% WoW"
+  - "Checkout CVR: ${metrics.checkout_cvr} (website path performance unchanged)"

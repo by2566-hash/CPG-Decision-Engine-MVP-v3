@@ -11,6 +11,10 @@
 from __future__ import annotations
 
 import logging
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from ...contracts import EvidenceGraphSnapshot
 
 log = logging.getLogger(__name__)
 
@@ -48,6 +52,14 @@ _TEMPLATES: dict[str, dict[str, dict[str, str]]] = {
         "BUNDLE_SUGGEST": {
             "diagnosis": "Average order value trending {aov_trend} — bundle opportunities detected",
             "recommendation": "Suggest product bundles to increase average order value",
+        },
+        "DIAGNOSE_MIX": {
+            "diagnosis": "Subscription rate decline detected — potential SKU mix or channel mix distortion, not universal funnel failure",
+            "recommendation": "Segment subscription rate by SKU and channel before any sitewide changes",
+        },
+        "FIX_DENOMINATOR": {
+            "diagnosis": "Subscription rate may be depressed by structurally non-subscribable channel orders in denominator",
+            "recommendation": "Recalculate subscription rate excluding non-subscribable channels; reallocate budget if adjusted rate normalizes",
         },
     },
     "promotion": {
@@ -207,6 +219,57 @@ class LLMRenderer:
 
         source = "based on historical outcomes" if confidence > 0.30 else "based on industry benchmarks"
         return f"Confidence: {level} ({confidence:.0%}) \u2014 {source}"
+
+
+    def render_from_snapshot(self, snapshot: "EvidenceGraphSnapshot") -> dict:
+        """Render a decision explanation from an EvidenceGraphSnapshot. [ADR-0009]
+
+        The snapshot is the SOLE substantive input. The renderer must only
+        reference facts present in the trace — it must never add facts that are
+        not in snapshot.evidence_trace[*].source_data.
+
+        Phase 1 (deterministic mode): formats the trace into a readable paragraph.
+        Phase 2+: LLM API call with prompt: "Translate this logic chain into
+        merchant-facing language. Do not add facts not present in the trace."
+
+        This method does NOT enforce verification_chain.all_passed — callers must
+        only call it for verified (eligible) candidates. The snapshot itself
+        carries the verification result in an L3_Verification trace entry.
+        """
+        # Phase 1: deterministic formatting — no LLM call
+        return self._format_snapshot(snapshot)
+
+    def _format_snapshot(self, snapshot: "EvidenceGraphSnapshot") -> dict:
+        """Phase 1 deterministic renderer for EvidenceGraphSnapshot."""
+        # Build diagnosis from L1_State entry
+        diagnosis = ""
+        recommendation = f"Action: {snapshot.winner_action}"
+        scoring_summary = ""
+
+        for entry in snapshot.evidence_trace:
+            if entry.step == "L1_State":
+                diagnosis = entry.finding
+            elif entry.step == "L3_Scoring":
+                scoring_summary = entry.finding
+            elif entry.step == "L3_Constraint" and entry.source_data.get("eligible"):
+                recommendation = (
+                    f"Action: {snapshot.winner_action} — "
+                    f"{entry.finding.lower()}"
+                )
+
+        narrative_parts = [
+            f"[{entry.step}] {entry.finding}"
+            for entry in snapshot.evidence_trace
+        ]
+        narrative = " | ".join(narrative_parts)
+
+        return {
+            "diagnosis": diagnosis or f"Decision trace for {snapshot.winner_action}",
+            "recommendation": recommendation,
+            "evidence_narrative": narrative,
+            "scoring_summary": scoring_summary,
+            "snapshot_candidate_id": snapshot.candidate_id,
+        }
 
 
 class _SafeDict(dict):

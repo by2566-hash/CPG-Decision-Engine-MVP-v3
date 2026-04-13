@@ -22,12 +22,9 @@ from __future__ import annotations
 
 import logging
 
-from ..contracts import MerchantStateVector
+from ..contracts import MerchantStateVector, PolicyDecision
 from .cross_module_correlator import CrossModuleCorrelator
 from .pillar3_llm.decision_verifier import DecisionVerifier
-from ..layer3_value.constraints import ConstraintEngine
-
-_constraint_engine = ConstraintEngine()
 
 log = logging.getLogger(__name__)
 
@@ -42,6 +39,16 @@ def base_utility(pred: dict, weights: dict) -> float:
 
     Normalizes each lift component to [-1, 1] range before weighting.
     Weights come from PolicyPack.policy_weights — never hardcoded.
+
+    Expected input ranges for meaningful (non-clipped) output:
+      gmv_lift:                  [0.0, 0.30]  — GMV lift as fraction of monthly GMV
+      margin_lift:               [0.0, 0.10]  — margin improvement fraction
+      inventory_risk_reduction:  [0.0, 0.20]  — inventory risk reduction fraction
+      retention_lift:            [0.0, 0.20]  — retention improvement fraction
+
+    PlaybookRegistry.get_base_utility() clips gmv_lift_prior to [0.0, 0.25]
+    before writing to pred["gmv_lift"] — two-layer defence. [ADR-0011]
+    Values above the normalization denominator are clipped to ±1.0.
     """
     g = _clip(pred.get("gmv_lift", 0) / 0.30)
     m = _clip(pred.get("margin_lift", 0) / 0.10)
@@ -116,129 +123,181 @@ class ScoringEngine:
         out: list[dict] = []
         for a in candidates:
             action_id = a.get("action_id", "unknown")
+            try:
+                # Constraints result: PolicyDecision from ConstraintEngine.check_all()
+                # (set by pipeline._generate_candidates). Legacy tuple support for
+                # test mocks that inject (True, []) directly.
+                raw_cr = a.get("constraints_result")
+                if isinstance(raw_cr, PolicyDecision):
+                    constraints_result = raw_cr
+                elif isinstance(raw_cr, tuple):
+                    # Legacy bridge: test mocks may inject (bool, list[str]) tuples
+                    passed_legacy, viols_legacy = raw_cr
+                    from ..layer3_value.constraints import _VIOLATION_WEIGHTS
+                    constraints_result = PolicyDecision(
+                        eligible=passed_legacy,
+                        hard_reject=not passed_legacy,
+                        risk_penalty=sum(
+                            _VIOLATION_WEIGHTS.get(v.split(":")[0], 1.0)
+                            for v in viols_legacy
+                        ),
+                        violations=list(viols_legacy),
+                    )
+                else:
+                    # FAIL-SAFE: missing constraints_result means ConstraintEngine was
+                    # never called — treat as ineligible, not as a silent pass.
+                    # Prevents bypassing all 6 CPG hard constraints without detection.
+                    log.warning(
+                        "[scoring] candidate %s missing constraints_result — "
+                        "treating as ineligible (fail-safe). "
+                        "Check _generate_candidates() in pipeline.py.",
+                        action_id,
+                    )
+                    constraints_result = PolicyDecision(
+                        eligible=False,
+                        hard_reject=True,
+                        risk_penalty=0.0,
+                        violations=["missing_constraints_result:pipeline_error"],
+                    )
 
-            # Constraints result: tuple (passed: bool, violations: list[str])
-            constraints_result = a.get("constraints_result", (True, []))
+                # Step 2: Run DecisionVerifier
+                verification_chain = self.verifier.verify(
+                    msm_state=msm_state,
+                    candidate=a,
+                    policy=policy,
+                    constraints_result=(constraints_result.eligible, constraints_result.violations),
+                    all_candidates=candidates,
+                )
 
-            # Step 2: Run DecisionVerifier
-            verification_chain = self.verifier.verify(
-                msm_state=msm_state,
-                candidate=a,
-                policy=policy,
-                constraints_result=constraints_result,
-                all_candidates=candidates,
-            )
+                # Step 3a: Hard constraint gate — CPG constraints cannot be overridden (CLAUDE.md)
+                if not constraints_result.eligible:
+                    out.append({
+                        "action_id": action_id,
+                        "eligible": False,
+                        "final_score": float("-inf"),
+                        "u_base": float("-inf"),
+                        "u_ucb": 0.0,
+                        "risk_penalty": float("inf"),
+                        "violations": constraints_result.violations,
+                        "module": a.get("module"),
+                        "msm_dimension": a.get("msm_dimension"),
+                        "urgency_score": a.get("urgency_score", 0.0),
+                        "verification_chain": verification_chain.model_dump(),
+                        "suppressed": a.get("suppressed", False),
+                        "trace": {"why_not": constraints_result.violations},
+                    })
+                    continue
 
-            # Step 3a: Hard constraint gate — CPG constraints cannot be overridden (CLAUDE.md)
-            # constraints_result is set by ConstraintEngine in pipeline._generate_candidates()
-            if not constraints_result[0]:
+                # Step 3b: If verification fails → final_score = -inf, skip scoring
+                if not verification_chain.all_passed:
+                    out.append({
+                        "action_id": action_id,
+                        "eligible": False,
+                        "final_score": float("-inf"),
+                        "u_base": float("-inf"),
+                        "u_ucb": 0.0,
+                        "risk_penalty": float("inf"),
+                        "violations": [],
+                        "module": a.get("module"),
+                        "msm_dimension": a.get("msm_dimension"),
+                        "urgency_score": a.get("urgency_score", 0.0),
+                        "verification_chain": verification_chain.model_dump(),
+                        "suppressed": a.get("suppressed", False),
+                        "trace": {
+                            "why_not": [
+                                s.reason
+                                for s in [
+                                    verification_chain.msm_trigger,
+                                    verification_chain.margin_gate,
+                                    verification_chain.inventory_gate,
+                                    verification_chain.conflict_check,
+                                ]
+                                if not s.passed
+                            ],
+                        },
+                    })
+                    continue
+
+                # Step 4: Compute score — β1·U_base + β2·U_ucb − β3·Risk
+                # constraints_result.risk_penalty is pre-computed by ConstraintEngine —
+                # no need to re-call check_all() here (eliminates double evaluation).
+                pred = a.get("pred", {})
+                u_base_val = base_utility(pred, weights)
+                p_risk = (
+                    risk_penalty(pred, risk_budget)
+                    + constraints_result.risk_penalty
+                )
+
+                # Phase 3 gate: LinUCB active only after 6 months of action_log data
+                u_ucb = 0.0  # Phase 1 cold-start: u_ucb = 0.0
+                if bandit is not None:
+                    arm_key = f"{policy.get('vertical', 'cpg')}:{a.get('action_family', '')}"
+                    arm = bandit.get(arm_key) if hasattr(bandit, 'get') else None
+                    if arm is not None and hasattr(arm, 'num_pulls') and arm.num_pulls > 0:
+                        x = a.get("context_vec")
+                        if x is not None:
+                            u_ucb = arm.predict(x)
+
+                # Urgency boost: CRITICAL dimension actions ranked higher
+                urgency_score = a.get("urgency_score", 0.0)
+                if urgency_score > 0.8:
+                    u_base_val = u_base_val * 1.15
+
+                raw_final = beta1_coeff * u_base_val + beta2_coeff * u_ucb - beta3_coeff * p_risk
+
+                # Signal quality overlay (V2 compat)
+                sq = a.get("_signal_quality", {})
+                conf = sq.get("confidence_weight", 1.0)
+                quality = sq.get("quality_factor", 1.0)
+                overlay_penalty = conf * quality  # ∈ [0, 1], 1.0 = no penalty
+                final = raw_final * overlay_penalty
+
                 out.append({
                     "action_id": action_id,
-                    "eligible": False,
-                    "final_score": float("-inf"),
-                    "u_base": float("-inf"),
-                    "u_ucb": 0.0,
-                    "risk_penalty": float("inf"),
-                    "violations": constraints_result[1],
+                    "eligible": True,
+                    "final_score": float(final),
+                    "u_base": float(u_base_val),
+                    "u_ucb": float(u_ucb),
+                    "risk_penalty": float(p_risk),
+                    "violations": [],
                     "module": a.get("module"),
                     "msm_dimension": a.get("msm_dimension"),
-                    "urgency_score": a.get("urgency_score", 0.0),
-                    "verification_chain": verification_chain.model_dump(),
-                    "suppressed": a.get("suppressed", False),
-                    "trace": {"why_not": constraints_result[1]},
-                })
-                continue
-
-            # Step 3b: If verification fails → final_score = -inf, skip scoring
-            if not verification_chain.all_passed:
-                out.append({
-                    "action_id": action_id,
-                    "eligible": False,
-                    "final_score": float("-inf"),
-                    "u_base": float("-inf"),
-                    "u_ucb": 0.0,
-                    "risk_penalty": float("inf"),
-                    "violations": constraints_result[1] if not constraints_result[0] else [],
-                    "module": a.get("module"),
-                    "msm_dimension": a.get("msm_dimension"),
-                    "urgency_score": a.get("urgency_score", 0.0),
+                    "urgency_score": urgency_score,
                     "verification_chain": verification_chain.model_dump(),
                     "suppressed": a.get("suppressed", False),
                     "trace": {
-                        "why_not": [
-                            s.reason
-                            for s in [
-                                verification_chain.msm_trigger,
-                                verification_chain.margin_gate,
-                                verification_chain.inventory_gate,
-                                verification_chain.conflict_check,
-                            ]
-                            if not s.passed
+                        "why": [
+                            f"base={u_base_val:.4f}",
+                            f"ucb={u_ucb:.4f}",
+                            f"risk={p_risk:.4f}",
+                            f"urgency={urgency_score:.2f}",
                         ],
+                        "conf": conf,
+                        "quality": quality,
                     },
                 })
-                continue
 
-            # Step 4: Compute score — β1·U_base + β2·U_ucb − β3·Risk
-            pred = a.get("pred", {})
-            u_base_val = base_utility(pred, weights)
-            # Risk(Constraints) = policy budget risk + CPG constraint soft risk
-            # ConstraintEngine is single source of truth for CPG risk (CLAUDE.md).
-            # Hard violations are already gated above (step 3a).
-            # compute_risk_score returns 0.0 when all constraints pass.
-            p_risk = (
-                risk_penalty(pred, risk_budget)
-                + _constraint_engine.compute_risk_score(a, a.get("signals", {}), policy)
-            )
-
-            # Phase 3 gate: LinUCB active only after 6 months of action_log data
-            u_ucb = 0.0  # Phase 1 cold-start: u_ucb = 0.0
-            if bandit is not None:
-                arm_key = f"{policy.get('vertical', 'cpg')}:{a.get('action_family', '')}"
-                arm = bandit.get(arm_key) if hasattr(bandit, 'get') else None
-                if arm is not None and hasattr(arm, 'num_pulls') and arm.num_pulls > 0:
-                    x = a.get("context_vec")
-                    if x is not None:
-                        u_ucb = arm.predict(x)
-
-            # Urgency boost: CRITICAL dimension actions ranked higher
-            urgency_score = a.get("urgency_score", 0.0)
-            if urgency_score > 0.8:
-                u_base_val = u_base_val * 1.15  # surface CRITICAL dimension actions higher
-
-            raw_final = beta1_coeff * u_base_val + beta2_coeff * u_ucb - beta3_coeff * p_risk
-
-            # Signal quality overlay (V2 compat)
-            sq = a.get("_signal_quality", {})
-            conf = sq.get("confidence_weight", 1.0)
-            quality = sq.get("quality_factor", 1.0)
-            overlay_penalty = conf * quality  # ∈ [0, 1], 1.0 = no penalty
-            final = raw_final * overlay_penalty
-
-            out.append({
-                "action_id": action_id,
-                "eligible": True,
-                "final_score": float(final),
-                "u_base": float(u_base_val),
-                "u_ucb": float(u_ucb),
-                "risk_penalty": float(p_risk),
-                "violations": [],
-                "module": a.get("module"),
-                "msm_dimension": a.get("msm_dimension"),
-                "urgency_score": urgency_score,
-                "verification_chain": verification_chain.model_dump(),
-                "suppressed": a.get("suppressed", False),
-                "trace": {
-                    "why": [
-                        f"base={u_base_val:.4f}",
-                        f"ucb={u_ucb:.4f}",
-                        f"risk={p_risk:.4f}",
-                        f"urgency={urgency_score:.2f}",
-                    ],
-                    "conf": conf,
-                    "quality": quality,
-                },
-            })
+            except Exception as exc:
+                # Per-candidate isolation: one bad candidate never kills the loop.
+                # Mark as suppressed with error trace so WSM still has a record.
+                log.error(
+                    "[scoring] candidate %s raised %s: %s — suppressing, continuing",
+                    action_id, type(exc).__name__, exc, exc_info=True,
+                )
+                out.append({
+                    "action_id": action_id,
+                    "eligible": False,
+                    "final_score": float("-inf"),
+                    "u_base": 0.0,
+                    "u_ucb": 0.0,
+                    "risk_penalty": float("inf"),
+                    "violations": [f"internal_error:{type(exc).__name__}"],
+                    "module": a.get("module"),
+                    "msm_dimension": a.get("msm_dimension"),
+                    "urgency_score": a.get("urgency_score", 0.0),
+                    "suppressed": True,
+                    "trace": {"error": str(exc)},
+                })
 
         out.sort(key=lambda z: z["final_score"], reverse=True)
         return out

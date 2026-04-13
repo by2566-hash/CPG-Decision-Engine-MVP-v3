@@ -92,8 +92,8 @@ class TestPipeline:
 
         _orig = _mod._generate_candidates
 
-        def _add_bad_candidate(msm_state, signals, policy):
-            normal = _orig(msm_state, signals, policy)
+        def _add_bad_candidate(msm_state, signals, policy, merchant_id=""):
+            normal = _orig(msm_state, signals, policy, merchant_id)
             # Add a candidate for acquisition (HEALTHY) → fails MSM trigger
             normal.append({
                 "action_id": "FORCED_ACQ_ACTION",
@@ -129,8 +129,8 @@ class TestPipeline:
 
         _orig = _mod._generate_candidates
 
-        def _add_suppressible(msm_state, signals, policy):
-            normal = _orig(msm_state, signals, policy)
+        def _add_suppressible(msm_state, signals, policy, merchant_id=""):
+            normal = _orig(msm_state, signals, policy, merchant_id)
             # INCREASE_AD_BUDGET is suppressed by rule: acq DEGRADING + cvr DEGRADING
             normal.append({
                 "action_id": "INCREASE_AD_BUDGET",

@@ -1,0 +1,99 @@
+# ── Meta-Pattern: Acquisition — CAC Rise from Channel Destination Mix ────────
+# Layer 1 (platform-level) [ADR-0011]
+# RULE: Zero hardcoded threshold numbers. All thresholds use ${thresholds.key}.
+# ─────────────────────────────────────────────────────────────────────────────
+
+meta_pattern:
+  id: acquisition_cac_channel_mix
+  module: acquisition
+  version: "1.0"
+  tags: [cac, channel_routing, destination_mix, meta_ads]
+  reusable: true
+  description: >
+    Detects CAC rise caused by traffic routing to lower-converting on-platform
+    destinations (e.g. IG Shop, FB Shop) rather than website conversion paths.
+    Prevents misdiagnosis as broad media inefficiency when the actual issue
+    is destination mix within a channel.
+
+triggers:
+  - name: cac_rising
+    msm_state: WATCH
+    condition: "cac_7d_vs_baseline > ${thresholds.cac_spike_ratio}"
+    metric: cac_7d_vs_baseline
+
+  - name: cac_severely_rising
+    msm_state: DEGRADING
+    condition: "cac_7d_vs_baseline > ${thresholds.cac_critical_ratio}"
+    metric: cac_7d_vs_baseline
+
+analysis_path:
+  - step: split_testing_vs_nontesting
+    description: "Separate test spend from non-test spend to isolate testing mix effect"
+    data_source: campaign_table
+    output_metric: testing_share_of_spend
+
+  - step: segment_by_channel
+    description: "Break out funnel metrics (CPA, CVR, content views) by channel"
+    data_source: campaign_table
+    output_metric: per_channel_cpa
+
+  - step: detect_onplatform_spike
+    description: >
+      Within the primary ad platform, check for spike in on-platform content
+      views or adds-to-cart. A spike in on-platform activity with flat website
+      CVR signals that more traffic is being routed to on-platform destinations.
+    data_source: platform_analytics
+    output_metric: onplatform_content_view_wow_delta
+    signal_to_watch: meta_content_views_spike
+
+  - step: compare_destination_cvr
+    description: "Compare conversion rate: website destination vs on-platform destinations"
+    decision_gate: "onplatform_cvr_ratio < ${thresholds.destination_cvr_gap_threshold}"
+    output_metric: onplatform_cvr_ratio
+
+root_cause_type: channel_routing
+
+actions:
+  - id: PAUSE_CHANNEL
+    type: CHANNEL_CONTROL
+    description: >
+      Disable on-platform destination(s) and route all traffic to website
+      conversion paths. Do not pause the channel — only the destination.
+    expected_utility_basis:
+      business_logic: >
+        On-platform destinations convert materially worse than website paths
+        for most CPG DTC brands. Removing them recovers effective CAC without
+        reducing spend or reach.
+      gmv_lift_formula: >
+        cac_improvement_pct × (monthly_new_customers × aov / monthly_gmv)
+    requires_approval: true
+    rollback_available: true
+
+  - id: REALLOCATE_BUDGET
+    type: DIAGNOSTIC
+    description: >
+      Before taking channel action, audit the destination split and content
+      view spike to confirm routing is the root cause. Only then disable
+      on-platform destinations.
+    expected_utility_basis:
+      business_logic: >
+        Prevents misattributing broad media inefficiency to destination mix,
+        or vice versa. Correct diagnosis is prerequisite for correct action.
+      gmv_lift_formula: >
+        prevented_wrong_action_cost / monthly_gmv
+    requires_approval: false
+    rollback_available: false
+
+evidence_refs_template:
+  - "CAC 7d: ${metrics.cac_7d} vs baseline: ${metrics.cac_baseline_30d}"
+  - "On-platform content view WoW delta: ${metrics.meta_content_views_wow_delta}"
+  - "Website CVR: ${metrics.checkout_cvr} (flat = not a website problem)"
+
+constraints:
+  attribution_window_days: 30  # Acquisition attribution window
+  applies_hard_constraints: []  # CHANNEL_CONTROL does not trigger discount constraints
+
+partner_clarifications_needed:
+  - "At what on-platform CVR gap (vs website) does this become actionable?"
+  - "Is this pattern only for Meta, or does it apply to TikTok / Pinterest shop?"
+  - "What is the typical time-to-recover after removing on-platform destinations?"

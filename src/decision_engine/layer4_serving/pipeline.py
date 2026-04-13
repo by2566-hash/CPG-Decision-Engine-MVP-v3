@@ -13,11 +13,13 @@ from __future__ import annotations
 
 import json
 import logging
+import re as _re_module
 from datetime import datetime, timezone
 
 from ..config import settings
 from ..contracts import (
     MerchantStateVector, DecisionCard, ImpactEstimate, Counterfactual, VerificationChain,
+    EvidenceGraphSnapshot, EvidenceTraceEntry,
 )
 from .. import db_client
 from ..layer1_msm.merchant_state_machine import MerchantStateMachine
@@ -31,6 +33,7 @@ from ..layer3_value.benchmark_engine import BenchmarkEngine
 from ..layer3_value.weekly_planner import WeeklyPlanner
 from ..layer3_value.constraints import ConstraintEngine
 from ..layer2_decision.pillar1_kg.playbook_registry import PlaybookRegistry
+from ..feature_plane import FeatureBuilder
 
 log = logging.getLogger(__name__)
 
@@ -45,6 +48,7 @@ _benchmark_engine = BenchmarkEngine()
 _weekly_planner = WeeklyPlanner()
 _constraint_engine = ConstraintEngine()
 _playbook_registry = PlaybookRegistry()
+_feature_builder = FeatureBuilder()
 
 # Dimension → module mapping
 _DIMENSIONS = ["acquisition", "conversion", "retention", "promotion"]
@@ -57,253 +61,311 @@ def run_once(
     """Execute full Deep Plane cycle. Returns (policy_pack_dict, ranked_actions_with_cards).
 
     16-step pipeline in strict order. See module docstring for invariants.
+
+    INVARIANT: WSM write (Step 14) executes regardless of pipeline success or
+    failure. On crash before scoring, a pipeline_error sentinel record is written
+    so L5 always has a trace — even for failed runs.
     """
-    # ── Step 1: Load merchant signals ────────────────────────────────
-    if signals is None:
-        signals = _load_signals(merchant_id)
+    # Pre-declare so except/finally can always reference them safely
+    ranked: list[dict] = []
+    policy: dict = {}
+    msm_state = None
+    alerts: list = []
+    emergency_triggered: bool = False
+    policy_version: str = "unknown"
+    _pipeline_error: str | None = None
 
-    # ── Step 2: Compute MerchantStateVector via MSM ──────────────────
-    msm_state = _msm.compute(merchant_id, signals)
-    log.info("[pipeline] MSM computed for %s", merchant_id)
+    try:
+        # ── Step 1: Load merchant signals ────────────────────────────
+        if signals is None:
+            signals = _load_signals(merchant_id)
 
-    # ── Step 3: Run AlertEngine — log alerts, flag emergency ─────────
-    prev_raw = db_client.fetch_latest_merchant_state(merchant_id)
-    previous_msm = _parse_msm(prev_raw) if prev_raw else None
-    alerts = _alert_engine.check_and_alert(merchant_id, msm_state, previous_msm)
-    emergency_triggered = _alert_engine.should_trigger_emergency_decision(
-        msm_state, previous_msm,
-    )
-    if alerts:
-        log.info("[pipeline] Alerts for %s: %s", merchant_id, alerts)
+        # ── Step 2: Compute MerchantStateVector via MSM ──────────────
+        msm_state = _msm.compute(merchant_id, signals)
+        log.info("[pipeline] MSM computed for %s", merchant_id)
 
-    # ── Step 4: Load PolicyPack (with LKG fallback) ──────────────────
-    policy = db_client.fetch_latest_policy(merchant_id)
-    if policy is None:
-        policy = _lkg_policy()
+        # ── Step 3: Run AlertEngine — log alerts, flag emergency ─────
+        prev_raw = db_client.fetch_latest_merchant_state(merchant_id)
+        previous_msm = _parse_msm(prev_raw) if prev_raw else None
+        alerts = _alert_engine.check_and_alert(merchant_id, msm_state, previous_msm)
+        emergency_triggered = _alert_engine.should_trigger_emergency_decision(
+            msm_state, previous_msm,
+        )
+        if alerts:
+            log.info("[pipeline] Alerts for %s: %s", merchant_id, alerts)
+
+        # ── Step 4: Load PolicyPack (with LKG fallback) ──────────────
+        policy = db_client.fetch_latest_policy(merchant_id)
         if policy is None:
-            raise RuntimeError(
-                f"No policy pack available for merchant {merchant_id} "
-                f"and no LKG fallback found"
-            )
-    policy_version = policy.get("policy_version", "unknown")
-
-    # ── Step 5: Load candidates from KG Playbooks ────────────────────
-    candidates = _generate_candidates(msm_state, signals, policy)
-
-    # ── Step 6–8: Score via ScoringEngine ────────────────────────────
-    # ScoringEngine internally runs:
-    #   6. CrossModuleCorrelator.correlate()
-    #   7a. constraints_result (attached to candidates)
-    #   7b. DecisionVerifier.verify()
-    #   7c/d. Score or -inf
-    #   8. Sort by final_score DESC
-    ranked = _scoring_engine.rank_actions(
-        msm_state=msm_state,
-        candidates=candidates,
-        policy=policy,
-        bandit=None,  # Phase 1: no bandit
-    )
-
-    # ── Step 9: For top 5 eligible → ImpactCalculator.estimate() ─────
-    eligible = [a for a in ranked if a.get("eligible", True)]
-    merchant_state = _merchant_state_dict(msm_state, signals)
-
-    for action in eligible[:5]:
-        module = action.get("module", "retention")
-        ie = _impact_calc.estimate(action, merchant_state, module)
-        action["impact_estimate"] = ie.model_dump()
-
-    # ── Step 10: Counterfactual for top 1 vs runner-up ───────────────
-    if len(eligible) >= 2:
-        cf = _impact_calc.build_counterfactual(
-            eligible[0], eligible[1], merchant_state,
-            eligible[0].get("module", "retention"),
-        )
-        if cf:
-            eligible[0]["counterfactual"] = cf.model_dump()
-
-    # ── Step 11: BenchmarkEngine for DEGRADING/CRITICAL dimensions ───
-    benchmarks: list[str] = []
-    for dim in _DIMENSIONS:
-        state_str = getattr(msm_state, f"{dim}_state")
-        if DimensionState(state_str).severity_score() >= 2:  # DEGRADING+
-            metric_name, metric_val = _get_benchmark_metric(dim, signals)
-            if metric_name:
-                narrative = _benchmark_engine.compare(
-                    merchant_id, dim, metric_val, metric_name,
+            policy = _lkg_policy()
+            if policy is None:
+                raise RuntimeError(
+                    f"No policy pack available for merchant {merchant_id} "
+                    f"and no LKG fallback found"
                 )
-                benchmarks.append(narrative)
+        policy_version = policy.get("policy_version", "unknown")
 
-    # ── Step 12: Assemble DecisionCards (top 3 only) ─────────────────
-    # Instantiate real DecisionCard objects — Pydantic validates every field.
-    decision_cards: list[DecisionCard] = []
-    for action in eligible[:3]:
-        ie_raw = action.get("impact_estimate")
-        if isinstance(ie_raw, dict):
-            ie_obj = ImpactEstimate(**ie_raw)
-        elif isinstance(ie_raw, ImpactEstimate):
-            ie_obj = ie_raw
-        else:
-            ie_obj = ImpactEstimate(conservative=0, expected=0, optimistic=0, confidence=0.30)
+        # ── Step 5: Load candidates from KG Playbooks ────────────────
+        candidates = _generate_candidates(msm_state, signals, policy, merchant_id)
 
-        cf_raw = action.get("counterfactual")
-        if isinstance(cf_raw, dict):
-            cf_obj = Counterfactual(**cf_raw)
-        elif isinstance(cf_raw, Counterfactual):
-            cf_obj = cf_raw
-        else:
-            cf_obj = None
-
-        vc_raw = action.get("verification_chain")
-        if isinstance(vc_raw, dict):
-            vc_obj = VerificationChain(**vc_raw)
-        elif isinstance(vc_raw, VerificationChain):
-            vc_obj = vc_raw
-        else:
-            vc_obj = None
-
-        module = action.get("module", "retention")
-        confidence = ie_obj.confidence
-        classification = DecisionCard.classify_from_confidence(confidence)
-        ts = int(datetime.now(timezone.utc).timestamp())
-
-        card = DecisionCard(
-            card_id=f"dc_{ts}_{merchant_id}_{module}",
-            merchant_id=merchant_id,
-            module=module,
-            classification=classification,
-            validation_status=classification,
-            msm_state=getattr(msm_state, f"{module}_state", "WATCH"),
-            pattern_detected=action.get("pattern_detected", ""),
-            evidence=action.get("evidence", []),
-            diagnosis=action.get("diagnosis", ""),
-            action_id=action.get("action_id", ""),
-            recommended_action=action.get("action_id", ""),
-            action_params=action.get("action_params", {}),
-            impact_estimate=ie_obj,
-            counterfactual=cf_obj,
-            benchmark_context=benchmarks[0] if benchmarks else None,
-            constraints_passed=action.get("eligible", True),
-            violations=action.get("violations", []),
-            urgency_score=min(max(action.get("urgency_score", 0.0), 0.0), 1.0),
-            quality_score=action.get("quality_score", 0.5),
-            base_utility_score=action.get("u_base"),
-            final_score=action.get("final_score"),
-            policy_version=policy_version,
-            verification_chain=vc_obj,
-            alerts=alerts,
-            msm_state_summary={d: getattr(msm_state, f"{d}_state") for d in _DIMENSIONS},
+        # ── Step 6–8: Score via ScoringEngine ────────────────────────
+        # ScoringEngine internally runs:
+        #   6. CrossModuleCorrelator.correlate()
+        #   7a. constraints_result (attached to candidates)
+        #   7b. DecisionVerifier.verify()
+        #   7c/d. Score or -inf
+        #   8. Sort by final_score DESC
+        ranked = _scoring_engine.rank_actions(
+            msm_state=msm_state,
+            candidates=candidates,
+            policy=policy,
+            bandit=None,  # Phase 1: no bandit
         )
-        decision_cards.append(card)
 
-    # ── Step 13: Render + 5-Gate for each DecisionCard ───────────────
-    response_cards: list[DecisionCard] = []
-    for card in decision_cards:
-        vc = card.verification_chain
-        all_passed = vc.all_passed if vc is not None else False
+        # ── Step 8b: Build EvidenceGraphSnapshot for top-K eligible ──
+        # Snapshots are built for top-3 eligible candidates only (cost control).
+        # Each snapshot aggregates the causal chain from L1 through L3 so the
+        # LLM Renderer can translate facts without hallucinating new ones (ADR-0009).
+        eligible_for_snap = [a for a in ranked if a.get("eligible", True)]
+        for action in eligible_for_snap[:3]:
+            snapshot = _build_evidence_snapshot(action, msm_state)
+            action["evidence_snapshot"] = snapshot
 
-        if not all_passed:
-            continue  # DecisionVerifier failed → no LLM call
+        # ── Step 9: For top 5 eligible → ImpactCalculator.estimate() ─
+        eligible = [a for a in ranked if a.get("eligible", True)]
+        merchant_state = _merchant_state_dict(msm_state, signals)
 
-        # 13a: LLMRenderer.render() — pass card as dict (renderer expects dict)
-        card_dict = card.model_dump()
-        # Restore signals (not stored on DecisionCard, needed by LLMRenderer templates)
-        card_dict["signals"] = signals
-        try:
-            merchant_copy = _llm_renderer.render(card_dict)
-        except ValueError:
-            log.warning(
-                "[pipeline] LLMRenderer rejected %s — skipping",
-                card.action_id,
+        for action in eligible[:5]:
+            module = action.get("module", "retention")
+            ie = _impact_calc.estimate(action, merchant_state, module)
+            action["impact_estimate"] = ie.model_dump()
+
+        # ── Step 10: Counterfactual for top 1 vs runner-up ───────────
+        if len(eligible) >= 2:
+            cf = _impact_calc.build_counterfactual(
+                eligible[0], eligible[1], merchant_state,
+                eligible[0].get("module", "retention"),
             )
-            continue
+            if cf:
+                eligible[0]["counterfactual"] = cf.model_dump()
 
-        # 13b: 5-Gate Bouncer
-        evidence = [signals] if signals else []
-        gate_errors = _safety_gateway.validate(merchant_copy, card_dict, evidence)
-
-        if gate_errors:
-            # 13d: 5-Gate fails → log, exclude from response; update validation_status
-            log.warning(
-                "[pipeline] 5-Gate failed for %s: %s",
-                card.action_id, gate_errors,
-            )
-            card.validation_status = "HYPOTHESIS"
-            continue
-
-        # 13c: 5-Gate passes → set merchant_copy on card, include in response
-        card.merchant_copy = merchant_copy
-        response_cards.append(card)
-
-    # ── Step 14: Write ALL candidates to WSM ─────────────────────────
-    # was_executed=False — shadow mode always, regardless of gate outcomes
-    for action in ranked:
-        try:
-            db_client.insert_wsm_transition(
-                merchant_id=merchant_id,
-                vertical=policy.get("vertical", "cpg"),
-                decision_mode="deep",
-                s_json={
-                    k: getattr(msm_state, k, None)
-                    for k in (
-                        "acquisition_state", "conversion_state",
-                        "retention_state", "promotion_state",
+        # ── Step 11: BenchmarkEngine for DEGRADING/CRITICAL dimensions
+        benchmarks: list[str] = []
+        for dim in _DIMENSIONS:
+            state_str = getattr(msm_state, f"{dim}_state")
+            if DimensionState(state_str).severity_score() >= 2:  # DEGRADING+
+                metric_name, metric_val = _get_benchmark_metric(dim, signals)
+                if metric_name:
+                    narrative = _benchmark_engine.compare(
+                        merchant_id, dim, metric_val, metric_name,
                     )
-                },
-                action_id=action.get("action_id", "unknown"),
-                action_family=action.get("action_family", action.get("action_id", "unknown")),
-                action_params_json={
-                    k: action[k]
-                    for k in ("action_id", "final_score", "u_base", "u_ucb", "risk_penalty")
-                    if k in action
-                },
-                constraints_passed=action.get("eligible", False),
-                violations_json=action.get("violations", []),
+                    benchmarks.append(narrative)
+
+        # ── Step 12: Assemble DecisionCards (top 3 only) ─────────────
+        # Instantiate real DecisionCard objects — Pydantic validates every field.
+        decision_cards: list[DecisionCard] = []
+        for action in eligible[:3]:
+            ie_raw = action.get("impact_estimate")
+            if isinstance(ie_raw, dict):
+                ie_obj = ImpactEstimate(**ie_raw)
+            elif isinstance(ie_raw, ImpactEstimate):
+                ie_obj = ie_raw
+            else:
+                ie_obj = ImpactEstimate(conservative=0, expected=0, optimistic=0, confidence=0.30)
+
+            cf_raw = action.get("counterfactual")
+            if isinstance(cf_raw, dict):
+                cf_obj = Counterfactual(**cf_raw)
+            elif isinstance(cf_raw, Counterfactual):
+                cf_obj = cf_raw
+            else:
+                cf_obj = None
+
+            vc_raw = action.get("verification_chain")
+            if isinstance(vc_raw, dict):
+                vc_obj = VerificationChain(**vc_raw)
+            elif isinstance(vc_raw, VerificationChain):
+                vc_obj = vc_raw
+            else:
+                vc_obj = None
+
+            module = action.get("module", "retention")
+            confidence = ie_obj.confidence
+            classification = DecisionCard.classify_from_confidence(confidence)
+            ts = int(datetime.now(timezone.utc).timestamp())
+
+            card = DecisionCard(
+                card_id=f"dc_{ts}_{merchant_id}_{module}",
+                merchant_id=merchant_id,
+                module=module,
+                classification=classification,
+                validation_status=classification,
+                msm_state=getattr(msm_state, f"{module}_state", "WATCH"),
+                pattern_detected=action.get("pattern_detected", ""),
+                evidence=action.get("evidence", []),
+                diagnosis=action.get("diagnosis", ""),
+                action_id=action.get("action_id", ""),
+                recommended_action=action.get("action_id", ""),
+                action_params=action.get("action_params", {}),
+                impact_estimate=ie_obj,
+                counterfactual=cf_obj,
+                benchmark_context=benchmarks[0] if benchmarks else None,
+                constraints_passed=action.get("eligible", True),
+                violations=action.get("violations", []),
+                urgency_score=min(max(action.get("urgency_score", 0.0), 0.0), 1.0),
+                quality_score=action.get("quality_score", 0.5),
                 base_utility_score=action.get("u_base"),
-                bandit_ucb_score=action.get("u_ucb"),
-                final_rank_score=action.get("final_score"),
-                planner_policy_version=policy_version,
-                was_executed=False,
-                verification_chain=action.get("verification_chain"),
-                impact_estimate=action.get("impact_estimate"),
-                counterfactual=action.get("counterfactual"),
-                urgency_score=action.get("urgency_score"),
-                module=action.get("module"),
-                msm_dimension=action.get("msm_dimension"),
-                msm_state=getattr(
-                    msm_state,
-                    f"{action.get('module', 'retention')}_state",
-                    None,
-                ),
+                final_score=action.get("final_score"),
+                policy_version=policy_version,
+                verification_chain=vc_obj,
+                alerts=alerts,
+                msm_state_summary={d: getattr(msm_state, f"{d}_state") for d in _DIMENSIONS},
             )
-        except Exception:
-            # Step 14 failure: log error, do NOT crash pipeline
-            log.exception(
-                "[pipeline] WSM write failed for %s — continuing",
-                action.get("action_id"),
-            )
+            decision_cards.append(card)
 
-    # ── Step 15: WeeklyPlanner ───────────────────────────────────────
-    # WeeklyPlanner expects plain dicts — pass model_dump() representations
-    weekly_plan = _weekly_planner.plan([c.model_dump() for c in response_cards])
+        # ── Step 13: Render + 5-Gate for each DecisionCard ───────────
+        response_cards: list[DecisionCard] = []
+        for card in decision_cards:
+            vc = card.verification_chain
+            all_passed = vc.all_passed if vc is not None else False
 
-    # ── Step 16: Return ──────────────────────────────────────────────
-    # Return DecisionCard objects — callers can call .model_dump() for serialization
-    result_actions = list(response_cards)
+            if not all_passed:
+                continue  # DecisionVerifier failed → no LLM call
 
-    policy_out = {
-        "policy_version": policy_version,
-        "vertical": policy.get("vertical", "cpg"),
-        "mode": "shadow" if settings.shadow_mode else "live",
-        "emergency_triggered": emergency_triggered,
-        "alerts": alerts,
-        "msm_state": {
-            d: getattr(msm_state, f"{d}_state") for d in _DIMENSIONS
-        },
-        "weekly_plan": weekly_plan,
-    }
+            # 13a: LLMRenderer.render() — pass card as dict (renderer expects dict)
+            card_dict = card.model_dump()
+            # Restore signals (not stored on DecisionCard, needed by LLMRenderer templates)
+            card_dict["signals"] = signals
+            try:
+                merchant_copy = _llm_renderer.render(card_dict)
+            except ValueError:
+                log.warning(
+                    "[pipeline] LLMRenderer rejected %s — skipping",
+                    card.action_id,
+                )
+                continue
 
-    return policy_out, result_actions
+            # 13b: 5-Gate Bouncer
+            evidence = [signals] if signals else []
+            gate_errors = _safety_gateway.validate(merchant_copy, card_dict, evidence)
+
+            if gate_errors:
+                # 13d: 5-Gate fails → log, exclude from response; update validation_status
+                log.warning(
+                    "[pipeline] 5-Gate failed for %s: %s",
+                    card.action_id, gate_errors,
+                )
+                card.validation_status = "HYPOTHESIS"
+                continue
+
+            # 13c: 5-Gate passes → set merchant_copy on card, include in response
+            card.merchant_copy = merchant_copy
+            response_cards.append(card)
+
+        # ── Step 14: Write ALL candidates to WSM ─────────────────────
+        # was_executed=False — shadow mode always, regardless of gate outcomes
+        for action in ranked:
+            try:
+                db_client.insert_wsm_transition(
+                    merchant_id=merchant_id,
+                    vertical=policy.get("vertical", "cpg"),
+                    decision_mode="deep",
+                    s_json={
+                        k: getattr(msm_state, k, None)
+                        for k in (
+                            "acquisition_state", "conversion_state",
+                            "retention_state", "promotion_state",
+                        )
+                    },
+                    action_id=action.get("action_id", "unknown"),
+                    action_family=action.get("action_family", action.get("action_id", "unknown")),
+                    action_params_json={
+                        k: action[k]
+                        for k in ("action_id", "final_score", "u_base", "u_ucb", "risk_penalty")
+                        if k in action
+                    },
+                    constraints_passed=action.get("eligible", False),
+                    violations_json=action.get("violations", []),
+                    base_utility_score=action.get("u_base"),
+                    bandit_ucb_score=action.get("u_ucb"),
+                    final_rank_score=action.get("final_score"),
+                    planner_policy_version=policy_version,
+                    was_executed=False,
+                    verification_chain=action.get("verification_chain"),
+                    impact_estimate=action.get("impact_estimate"),
+                    counterfactual=action.get("counterfactual"),
+                    urgency_score=action.get("urgency_score"),
+                    module=action.get("module"),
+                    msm_dimension=action.get("msm_dimension"),
+                    msm_state=getattr(
+                        msm_state,
+                        f"{action.get('module', 'retention')}_state",
+                        None,
+                    ),
+                )
+            except Exception:
+                # Step 14 individual write failure: log and continue — never crash pipeline
+                log.exception(
+                    "[pipeline] WSM write failed for %s — continuing",
+                    action.get("action_id"),
+                )
+
+        # ── Step 15: WeeklyPlanner ────────────────────────────────────
+        # WeeklyPlanner expects plain dicts — pass model_dump() representations
+        weekly_plan = _weekly_planner.plan([c.model_dump() for c in response_cards])
+
+        # ── Step 16: Return ───────────────────────────────────────────
+        # Return DecisionCard objects — callers can call .model_dump() for serialization
+        policy_out = {
+            "policy_version": policy_version,
+            "vertical": policy.get("vertical", "cpg"),
+            "mode": "shadow" if settings.shadow_mode else "live",
+            "emergency_triggered": emergency_triggered,
+            "alerts": alerts,
+            "msm_state": {
+                d: getattr(msm_state, f"{d}_state") for d in _DIMENSIONS
+            },
+            "weekly_plan": weekly_plan,
+        }
+        return policy_out, list(response_cards)
+
+    except Exception as exc:
+        # Log with full traceback so the root cause is always visible
+        _pipeline_error = f"{type(exc).__name__}: {exc}"
+        log.error(
+            "[pipeline] run_once FAILED for %s — %s",
+            merchant_id, _pipeline_error, exc_info=True,
+        )
+        raise  # re-raise so caller (API / DAG) knows this run failed
+
+    finally:
+        # ── INVARIANT: write WSM failure record when pipeline crashed before scoring
+        # If ranked is still empty (crash in Steps 1-5), we have nothing to write
+        # in Step 14. Write a single sentinel record so L5 always has a trace.
+        if _pipeline_error is not None and not ranked:
+            try:
+                db_client.insert_wsm_transition(
+                    merchant_id=merchant_id,
+                    vertical=policy.get("vertical", "cpg") if policy else "cpg",
+                    decision_mode="deep",
+                    s_json={
+                        k: getattr(msm_state, k, None)
+                        for k in (
+                            "acquisition_state", "conversion_state",
+                            "retention_state", "promotion_state",
+                        )
+                    } if msm_state else {},
+                    action_id="pipeline_error",
+                    action_family="pipeline_error",
+                    action_params_json={"error": _pipeline_error},
+                    constraints_passed=False,
+                    violations_json=["pipeline_error"],
+                    was_executed=False,
+                )
+            except Exception:
+                log.exception(
+                    "[pipeline] WSM error-sentinel write also failed for %s", merchant_id
+                )
 
 
 # ── Internal helpers ─────────────────────────────────────────────────
@@ -341,13 +403,23 @@ def _generate_candidates(
     msm_state: MerchantStateVector,
     signals: dict,
     policy: dict,
+    merchant_id: str = "",
 ) -> list[dict]:
     """Phase 1: generate candidates based on MSM state.
 
     For each at-risk dimension (WATCH or worse), create candidate actions
     from ImpactCalculator.INDUSTRY_BENCHMARKS.
+
+    merchant_id is used to load brand bindings for U_base priority lookup
+    and evidence_refs template rendering. [ADR-0011]
     """
     candidates: list[dict] = []
+
+    # Build DecisionFeatureVector once per pipeline run (signals are constant).
+    # Attached to each candidate under "feature_vector" for downstream consumers
+    # (scoring engine in Phase 2 Track B, bandit in Phase 3).
+    # Existing consumers of the "signals" dict are unchanged — this is additive.
+    feature_vector = _feature_builder.build(signals, msm_state)
 
     dim_fields = {
         "retention": ("retention_state", "retention_urgency"),
@@ -374,11 +446,13 @@ def _generate_candidates(
             values = list(bench.values())
             mid_val = values[1] if len(values) > 1 else 0.0
 
-            # Attempt to get U_base from Playbook YAML (partner-defined)
+            # Attempt to get U_base from brand binding (priority 1) or
+            # flat playbook expected_utility (priority 2). [ADR-0011]
+            # merchant_id enables brand binding lookup in PlaybookRegistry.
             kg_utility = None
             if playbook:
                 kg_utility = _playbook_registry.get_base_utility(
-                    playbook["id"], {"action_id": action_id}
+                    playbook["id"], {"action_id": action_id, "merchant_id": merchant_id}
                 )
 
             pred = {}
@@ -400,6 +474,25 @@ def _generate_candidates(
             elif module == "promotion":
                 pred["margin_lift"] = mid_val
 
+            # Populate evidence_refs from brand binding template. [ADR-0011]
+            # Renders ${metrics.*} placeholders with available signal values.
+            evidence_refs: list[str] = []
+            if playbook:
+                binding = _playbook_registry.get_brand_binding(merchant_id, playbook["id"])
+                if binding:
+                    templates = binding.get("evidence_refs_template", [])
+                    flat_signals = {f"metrics.{k}": str(v) for k, v in signals.items() if v is not None}
+                    for tmpl in templates:
+                        try:
+                            rendered = _re_module.sub(
+                                r"\$\{([^}]+)\}",
+                                lambda m: flat_signals.get(m.group(1), m.group(0)),
+                                tmpl,
+                            )
+                            evidence_refs.append(rendered)
+                        except Exception:
+                            evidence_refs.append(tmpl)
+
             candidate: dict = {
                 "action_id": action_id,
                 "module": module,
@@ -408,14 +501,17 @@ def _generate_candidates(
                 "pred": pred,
                 "action_family": action_id.split("_")[0],
                 "signals": signals,
+                "evidence_refs": evidence_refs,
             }
-            # Run ConstraintEngine — all 6 CPG hard constraints
-            constraints_passed, violations = _constraint_engine.check_all(
+            # Run ConstraintEngine — all 6 CPG hard constraints.
+            # Returns PolicyDecision (weighted risk_penalty, typed violations).
+            policy_decision = _constraint_engine.check_all(
                 candidate=candidate,
                 signals=signals,
                 policy=policy,
             )
-            candidate["constraints_result"] = (constraints_passed, violations)
+            candidate["constraints_result"] = policy_decision
+            candidate["feature_vector"] = feature_vector
             candidates.append(candidate)
 
     return candidates
@@ -441,6 +537,115 @@ def _get_benchmark_metric(dimension: str, signals: dict) -> tuple[str, float]:
         "promotion": ("promo_incrementality", signals.get("promo_incrementality", 0)),
     }
     return mapping.get(dimension, ("", 0.0))
+
+
+def _build_evidence_snapshot(
+    candidate: dict,
+    msm_state: MerchantStateVector,
+) -> EvidenceGraphSnapshot:
+    """Build an EvidenceGraphSnapshot for a single top-K candidate. [ADR-0009]
+
+    Aggregates the causal chain from L1 state → L2 KG → L3 constraint
+    → L3 scoring → L3 verification into a single sealed object.
+
+    The snapshot is passed to LLMRenderer.render_from_snapshot() so the
+    renderer translates facts without hallucinating new ones.
+    """
+    entries: list[EvidenceTraceEntry] = []
+
+    # ── L1: Merchant state ────────────────────────────────────────────
+    module = candidate.get("module", "unknown")
+    dim_state = getattr(msm_state, f"{module}_state", "UNKNOWN")
+    dim_urgency = getattr(msm_state, f"{module}_urgency", 0.0)
+    entries.append(EvidenceTraceEntry(
+        step="L1_State",
+        finding=f"{module.capitalize()} dimension is {dim_state} (urgency={dim_urgency:.2f})",
+        source_data={
+            "module": module,
+            "state": dim_state,
+            "urgency": dim_urgency,
+            "merchant_id": msm_state.merchant_id,
+        },
+    ))
+
+    # ── L2: KG / Playbook ────────────────────────────────────────────
+    evidence_refs = candidate.get("evidence_refs", [])
+    pred = candidate.get("pred", {})
+    entries.append(EvidenceTraceEntry(
+        step="L2_KG",
+        finding=(
+            f"Playbook matched for {module}; "
+            f"evidence refs: {evidence_refs or ['benchmark_prior']}"
+        ),
+        source_data={
+            "evidence_refs": evidence_refs,
+            "pred": pred,
+            "action_family": candidate.get("action_family", ""),
+        },
+    ))
+
+    # ── L3: Constraint evaluation ────────────────────────────────────
+    # After rank_actions(), `constraints_result` is flattened to `eligible`
+    # and `violations` keys.  Accept both forms.
+    pd = candidate.get("constraints_result")
+    if pd is not None:
+        c_eligible = getattr(pd, "eligible", True)
+        c_violations = list(getattr(pd, "violations", []))
+        c_risk = getattr(pd, "risk_penalty", 0.0)
+    else:
+        c_eligible = candidate.get("eligible", True)
+        c_violations = list(candidate.get("violations", []))
+        c_risk = candidate.get("risk_penalty", 0.0)
+    if c_eligible:
+        constraint_finding = "All constraints passed"
+    else:
+        constraint_finding = f"Blocked — violations: {', '.join(c_violations)}"
+    entries.append(EvidenceTraceEntry(
+        step="L3_Constraint",
+        finding=constraint_finding,
+        source_data={
+            "eligible": c_eligible,
+            "violations": c_violations,
+            "risk_penalty": c_risk,
+        },
+    ))
+
+    # ── L3: Scoring ──────────────────────────────────────────────────
+    u_base = candidate.get("u_base", 0.0)
+    u_ucb = candidate.get("u_ucb", 0.0)
+    rp = candidate.get("risk_penalty", 0.0)
+    final_score = candidate.get("final_score", 0.0)
+    entries.append(EvidenceTraceEntry(
+        step="L3_Scoring",
+        finding=(
+            f"final_score={final_score:.4f} "
+            f"(β1·U_base={u_base:.4f}, β2·U_ucb={u_ucb:.4f}, β3·Risk={rp:.4f})"
+        ),
+        source_data={
+            "u_base": u_base,
+            "u_ucb": u_ucb,
+            "risk_penalty": rp,
+            "final_score": final_score,
+        },
+    ))
+
+    # ── L3: Verification ─────────────────────────────────────────────
+    vc = candidate.get("verification_chain")
+    if vc is not None:
+        all_passed = vc.get("all_passed", False) if isinstance(vc, dict) else getattr(vc, "all_passed", False)
+        vf = "Verification passed (all gates green)" if all_passed else "Verification failed — final_score set to -inf"
+        entries.append(EvidenceTraceEntry(
+            step="L3_Verification",
+            finding=vf,
+            source_data={"all_passed": all_passed},
+        ))
+
+    action_id = candidate.get("action_id", "unknown")
+    return EvidenceGraphSnapshot(
+        candidate_id=f"{msm_state.merchant_id}_{action_id}",
+        winner_action=action_id,
+        evidence_trace=entries,
+    )
 
 
 def _parse_msm(raw: dict) -> MerchantStateVector | None:

@@ -31,6 +31,7 @@ actions:
   - id: PAUSE_LOW_ROAS_CAMPAIGN
     type: CAMPAIGN_CONTROL
     description: ""
+    expected_utility: 0.08  # stub — partner to replace with brand-specific prior
 
 constraints:
   - attribution_window_days: 30

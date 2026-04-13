@@ -1,0 +1,50 @@
+# ── Brand Binding: Wandering Bear × conversion_subscription_mix ──────────────
+# Layer 2 (brand-level) [ADR-0011]
+# RULE: No raw evidence data here. Evidence lives in use_cases/wandering_bear/.
+# ─────────────────────────────────────────────────────────────────────────────
+
+brand: wandering_bear
+meta_pattern_ref: conversion_subscription_mix
+binding_version: "1.0"
+
+entity_bindings:
+  # Wandering Bear's specific vocabulary for generic pattern concepts
+  diluting_sku_name: PM                     # "Pitcher Matcha" — the high-volume low-sub SKU
+  nonsubscribable_channel: shopcash         # ShopCash orders cannot subscribe by design
+  subscription_platform: recharge           # subscription management platform
+
+thresholds:
+  # All values are partner_prior — will update to outcome_calibrated after N≥10 outcomes
+  sub_rate_alert_pct: -0.03               # sub rate WoW delta below -3pp → WATCH
+  sub_rate_critical_pct: -0.06            # sub rate WoW delta below -6pp → DEGRADING
+  sku_concentration_threshold: 0.40       # single SKU >40% of orders → check for mix
+  mix_diagnosis_min_delta_pp: 2.0         # adjusted vs reported delta >2pp confirms mix
+  calibration_status: partner_prior
+  # To update: run reward_backfill.py after N≥10 real outcomes, set outcome_calibrated
+
+action_utility_priors:
+  DIAGNOSE_MIX:
+    # Cases 1+2: diagnostic prevention of sitewide redesign + sub rate protection
+    gmv_lift_prior: 0.08
+    # Derivation: prevented misdiagnosis (cases wb_001, wb_002)
+    #   Sub rate protection: ~4pp sub rate improvement × subscription LTV premium
+    #   Prevented cost: avoided sitewide subscription redesign (est. 2-4 weeks eng)
+    #   Method: diagnostic_prevention_value
+    confidence: 0.75               # high: specific numbers confirmed in use cases
+    calibration_status: partner_prior
+    evidence_case: "wb_001"        # primary evidence: SKU mix dilution case
+
+  FIX_DENOMINATOR:
+    # Case 2: ShopCash denominator fix → channel budget reallocation
+    gmv_lift_prior: 0.05
+    # Derivation: measurement fix + ShopCash budget reallocation
+    #   Adjusted sub rate normalized after exclusion → budget reallocated to higher-quality channels
+    #   Method: diagnostic_prevention_value (indirect GMV impact via correct budget allocation)
+    confidence: 0.70
+    calibration_status: partner_prior
+    evidence_case: "wb_002"        # ShopCash denominator fix
+
+evidence_refs_template:
+  - "WB subscription rate reported delta: ${metrics.subscription_rate_pop_delta} WoW"
+  - "PM SKU order share: ${metrics.top_sku_order_share} (WB baseline ~52%)"
+  - "ShopCash order share: ${metrics.shopcash_order_share} of total orders"

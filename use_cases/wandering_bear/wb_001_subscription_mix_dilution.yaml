@@ -1,0 +1,55 @@
+# ── Use Case: WB-001 PM Flavor Mix Diluted Subscription Rate ─────────────────
+# Single Source of Truth for all observed numbers [ADR-0011]
+# ─────────────────────────────────────────────────────────────────────────────
+
+use_case_id: wb_001
+brand: wandering_bear
+meta_pattern_ref: conversion_subscription_mix
+module: conversion
+observed_at: "2023-Q1"
+evidence_quality: high
+
+calibration_value_for:
+  - action_id: DIAGNOSE_MIX
+    gmv_lift_derivation:
+      method: diagnostic_prevention_value
+      prevented_action: "sitewide subscription experience redesign"
+      prevented_action_cost_est: "2-4 weeks engineering (misallocated)"
+      sub_rate_protection_pp: 4.0       # ~4pp sub rate protected by correct diagnosis
+      ltv_impact: "subscription LTV premium for correctly retained subscribers"
+      gmv_lift_estimate: 0.08
+
+data_observed:
+  period: "2023-Q1"
+  total_orders: 1648
+  subscription_orders: 243
+  reported_aggregate_sub_rate: 0.147     # 14.7% = 243/1648
+  pm_orders: 866
+  pm_subscription_orders: 100
+  pm_subscription_rate: 0.115            # 100/866
+  pm_order_share: 0.526                  # 866/1648 = 52.6%
+  account_level_sub_rate_excl_pm: 0.18   # excluding PM orders
+  sub_rate_excl_pm_and_shopcash: 0.19    # excluding both PM and ShopCash
+
+analysis_executed:
+  - step: segment_by_sku
+    finding: "PM SKU: 52.6% of orders, 11.5% sub rate (vs 18% aggregate excl PM)"
+  - step: compute_sku_sub_rates
+    finding: "Mix dilution = (0.526) × (0.18 - 0.115) = 3.4pp aggregate impact"
+  - step: compare_adjusted_vs_reported
+    finding: "Adjusted rate (excl PM + ShopCash): 19% vs reported 14.7% → 4.3pp delta → confirms mix diagnosis"
+
+action_taken: DIAGNOSE_MIX   # DIAGNOSTIC: segment-first, do not redesign sitewide
+root_cause_confirmed: mix_problem
+
+counterfactual: >
+  Without this diagnosis, the team would have interpreted the 14.7% sub rate
+  as a universal funnel failure and redesigned the sitewide subscription
+  experience — a costly action with no impact on the actual root cause (PM SKU
+  dominance). Sub rates would have remained suppressed post-redesign.
+
+outcome_value: >
+  Correctly identified mix dilution as root cause. No sitewide redesign required.
+  PM product mix and ShopCash order mix identified as the two levers.
+  Estimated prevented engineering cost: 2-4 weeks.
+  Sub rate baseline established at 18-19% (excluding distorting factors).

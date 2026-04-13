@@ -32,6 +32,7 @@ actions:
   - id: MOBILE_UX_OPTIMIZATION
     type: MERCHANDISING
     description: ""
+    expected_utility: 0.08  # stub — partner to replace with brand-specific prior
 
 constraints:
   - attribution_window_days: 0  # Conversion = instant attribution
