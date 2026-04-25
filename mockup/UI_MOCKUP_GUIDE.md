@@ -43,7 +43,19 @@ This is where the engine presents ranked action candidates after applying the ma
 - **Dollar Impact Estimation:** Each insight translates abstract operations into clear expected returns: `+$11,192/mo (range $5,596–$20,146)`.
 - **🛑 Cross-Module Correlator (Warnings Tab):** A flagship feature demonstrating system intelligence. Instead of silently dropping an action because it causes a conflict (e.g., *increasing ad spend while checkout is broken*), the UI explicitly lists the action as "Dimmed/Grayed Out" with a vivid warning explaining **WHY** the AI suppressed it. 
 
-### 📅 E. Action Cards & Weekly Planner (L3: Value Intelligence)
+### 🔻 E. Conversion Funnels (L0/L1 signal — demo)
+*Located in the `Conversion Funnels` tab.*
+- End-to-end **session → purchase** funnel with deterministic demo counts tied to the same baselines as `MOCK_MERCHANT` (visitors / orders) so the story stays consistent in investor meetings.
+- **Primary funnel** pairs a canvas chart with bar strips showing step-over-step drop-off; **Mobile vs desktop** uses grouped bars (blue = mobile, coral = desktop) to dramatize the mobile conversion gap that feeds L1 **Conversion** MSM state.
+- **Decision Engine hooks** card links the view to Cross-Module suppression and RFM prioritization (narrative only; no live API).
+
+### 🎯 F. Customer Segmentation — RFM (L0/L1 signal — demo)
+*Located in the `Segmentation (RFM)` tab.*
+- **RFM quintiles** (Recency × Frequency heatmap) and named segments (**Champions**, **Loyal**, **At Risk**, **New**, etc.) with revenue mix and suggested plays — aligned with retention / promotion dimensions from the README.
+- KPI strip (customers in scope, median recency, avg monetary) sets context before the segment table; **Refresh** re-renders the same demo snapshot (simulates cache refresh).
+- Explicitly **demo / investor** data — no PII; suitable for VC walkthrough alongside Shadow Mode messaging.
+
+### 📅 G. Action Cards & Weekly Planner (L3: Value Intelligence)
 *Located in the `Action Cards` tab.*
 - **🌟 Weekly Action Plan Banner:** An aggregated natural-language summary (Narrative) at the top. The UI automatically synthesizes the Top 2 pending actions and states the exact primary modules being targeted this week.
 - **Action Lifecycle (Pending → Done):** Simulates the final "Approve" (Merchant Approval Gate) stage, turning theoretical insights into executable deployment tasks. Provides an interactive feedback loop dropdown (e.g., "Met my expectations", "Price wasn't right") mimicking the system's RLHF logging (Layer 5/WSM).
@@ -62,7 +74,9 @@ To best showcase the architecture through this mockup, follow this interaction p
    > *"But we never black-box the AI. The merchant decides the primary goal."* Click Custom, drag the `Growth` slider up, and observe the other sliders dynamically lowering to maintain the `sum=1.0` requirement limit seamlessly. 
 4. **Showcase Action Suppression (`Warnings` filter):**
    > *"Our AI knows what NOT to do."* Click the Warnings tab and highlight the grayed-out card explicitly suppressed by the Cross-Module Correlator.
-5. **Visit `Action Cards`:**
+5. **Open `Conversion Funnels` then `Segmentation (RFM)`:**
+   > *"This is how we turn raw Shopline signals into funnel diagnostics and RFM-backed retention plays — before we auto-execute anything."* Call out mobile vs desktop and the RFM revenue concentration (Champions + Loyal).
+6. **Visit `Action Cards`:**
    > *"Finally, everything is rolled up into a human-readable Weekly Plan."* End the demo by pointing to the dynamic banner at the top synthesizing the focus for the week.
 
 ---

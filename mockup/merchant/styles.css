@@ -812,3 +812,142 @@ canvas { display: block; }
   font-size: 12px; color: var(--red); display: flex; gap: 8px; align-items: flex-start;
 }
 .suppression-alert strong { font-weight: 700; }
+
+/* ═══════════════════════════════════════════════════════════════════
+ * Conversion Funnels + RFM Segmentation (demo pages)
+ * ═══════════════════════════════════════════════════════════════════ */
+.funnel-hero {
+  background: linear-gradient(135deg, rgba(59, 130, 246, 0.08) 0%, var(--bg-card) 45%, rgba(239, 68, 68, 0.06) 100%);
+  border: 1px solid rgba(59, 130, 246, 0.2);
+}
+.funnel-hero-inner {
+  display: flex; flex-wrap: wrap; gap: 28px; justify-content: space-between; align-items: flex-start;
+}
+.funnel-hero-kicker {
+  font-size: 11px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase;
+  color: #3b82f6; margin-bottom: 8px;
+}
+.funnel-hero-title {
+  font-size: 20px; font-weight: 800; color: var(--text-primary); line-height: 1.25; max-width: 520px;
+}
+.funnel-hero-desc {
+  margin-top: 10px; font-size: 13px; color: var(--text-secondary); line-height: 1.7; max-width: 560px;
+}
+.funnel-hero-desc strong { color: var(--text-primary); }
+.funnel-hero-stats {
+  display: flex; flex-wrap: wrap; gap: 16px;
+}
+.funnel-stat {
+  min-width: 140px; padding: 14px 18px; background: var(--bg-input);
+  border-radius: var(--radius-sm); border: 1px solid var(--border);
+}
+.funnel-stat-label { font-size: 10px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.06em; }
+.funnel-stat-val { display: block; font-size: 22px; font-weight: 800; color: var(--accent); margin-top: 4px; font-variant-numeric: tabular-nums; }
+
+.funnel-dual { margin-top: 0; }
+.funnel-canvas-wrap { margin-bottom: 12px; }
+.funnel-stage-row { margin-bottom: 12px; }
+.funnel-stage-meta {
+  display: flex; justify-content: space-between; align-items: baseline;
+  font-size: 12px; margin-bottom: 4px;
+}
+.funnel-stage-label { color: var(--text-secondary); font-weight: 600; }
+.funnel-stage-count { font-weight: 800; font-variant-numeric: tabular-nums; color: var(--text-primary); }
+.funnel-bar-track {
+  height: 8px; background: var(--bg-input); border-radius: 4px; overflow: hidden;
+  border: 1px solid var(--border);
+}
+.funnel-bar-fill {
+  height: 100%; border-radius: 4px;
+  background: linear-gradient(90deg, #3b82f6, rgba(239, 68, 68, 0.9));
+  transition: width 0.5s ease;
+}
+.funnel-drop {
+  font-size: 10px; color: var(--text-dim); margin-top: 4px; display: block;
+}
+.funnel-drop-na { color: #333; }
+
+.funnel-split-grid {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-top: 8px;
+}
+.funnel-split-col {
+  padding: 12px 14px; background: var(--bg-input); border-radius: var(--radius-sm); border: 1px solid var(--border);
+}
+.funnel-split-head { font-size: 12px; font-weight: 700; margin-bottom: 8px; color: var(--text-primary); }
+.funnel-split-metric { font-size: 14px; color: var(--text-secondary); }
+.funnel-split-metric strong { color: #3b82f6; font-size: 16px; }
+.funnel-split-sub { font-size: 11px; color: var(--text-dim); margin-top: 6px; }
+.funnel-split-foot {
+  font-size: 11px; color: var(--text-dim); margin-top: 12px; line-height: 1.5;
+}
+
+.funnel-insight-grid {
+  display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; margin-top: 8px;
+}
+.funnel-insight {
+  padding: 14px 16px; background: var(--bg-input); border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+}
+.funnel-insight-tag {
+  font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em;
+  color: #3b82f6;
+}
+.funnel-insight-text {
+  margin-top: 8px; font-size: 12px; color: var(--text-secondary); line-height: 1.65;
+}
+.funnel-insight-text strong { color: var(--text-primary); }
+
+.rfm-kpi-row {
+  display: grid; grid-template-columns: repeat(5, 1fr); gap: 12px; margin-bottom: 16px;
+}
+.rfm-kpi {
+  background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius);
+  padding: 16px 18px;
+}
+.rfm-kpi-accent { border-color: rgba(34, 197, 94, 0.35); background: rgba(34, 197, 94, 0.06); }
+.rfm-kpi-label { font-size: 10px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.05em; }
+.rfm-kpi-val { display: block; font-size: 20px; font-weight: 800; margin-top: 6px; font-variant-numeric: tabular-nums; }
+
+.rfm-matrix-wrap { margin-top: 8px; }
+.rfm-matrix-note { font-size: 11px; color: var(--text-dim); margin-top: 12px; line-height: 1.5; }
+
+.rfm-seg-row {
+  display: grid;
+  grid-template-columns: minmax(160px, 1.1fr) minmax(140px, 0.9fr) 1.4fr;
+  gap: 14px; align-items: center;
+  padding: 14px 0; border-bottom: 1px solid var(--border);
+}
+.rfm-seg-row:last-child { border-bottom: none; }
+.rfm-seg-left { display: flex; align-items: center; gap: 10px; }
+.rfm-seg-emoji { font-size: 20px; }
+.rfm-seg-name { font-size: 13px; font-weight: 700; }
+.rfm-seg-rfm { font-size: 11px; color: var(--text-muted); margin-top: 2px; font-variant-numeric: tabular-nums; }
+.rfm-seg-mid { display: flex; flex-direction: column; gap: 4px; }
+.rfm-seg-cust { font-size: 11px; color: var(--text-secondary); }
+.rfm-rev-bar-wrap {
+  height: 4px; background: var(--bg-input); border-radius: 2px; overflow: hidden;
+}
+.rfm-rev-bar { height: 100%; border-radius: 2px; min-width: 4px; transition: width 0.4s ease; }
+.rfm-seg-rev { font-size: 11px; font-weight: 700; color: var(--text-primary); }
+.rfm-seg-blurb { font-size: 12px; color: var(--text-muted); line-height: 1.55; }
+.rfm-ao { color: var(--text-dim); font-size: 11px; white-space: nowrap; }
+
+.rfm-play-grid {
+  display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; margin-top: 8px;
+}
+.rfm-play-card {
+  padding: 14px 16px; background: var(--bg-input); border-radius: var(--radius-sm); border: 1px solid var(--border);
+}
+.rfm-play-title { font-size: 13px; font-weight: 700; margin-bottom: 8px; color: var(--text-primary); }
+.rfm-play-text { font-size: 12px; color: var(--text-secondary); line-height: 1.65; }
+.rfm-play-text code {
+  font-size: 11px; background: var(--bg-body); padding: 2px 6px; border-radius: 4px; border: 1px solid var(--border);
+}
+
+@media (max-width: 1024px) {
+  .funnel-insight-grid { grid-template-columns: 1fr; }
+  .funnel-split-grid { grid-template-columns: 1fr; }
+  .rfm-kpi-row { grid-template-columns: repeat(2, 1fr); }
+  .rfm-seg-row { grid-template-columns: 1fr; }
+  .rfm-play-grid { grid-template-columns: 1fr; }
+}

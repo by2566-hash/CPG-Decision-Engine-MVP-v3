@@ -25,6 +25,12 @@
       <a class="nav-item" data-page="insights" onclick="navigateTo('insights')">
         <span class="nav-icon">✨</span> AI Insights
       </a>
+      <a class="nav-item" data-page="funnels" onclick="navigateTo('funnels')">
+        <span class="nav-icon">🔻</span> Conversion Funnels
+      </a>
+      <a class="nav-item" data-page="rfm" onclick="navigateTo('rfm')">
+        <span class="nav-icon">🎯</span> Segmentation (RFM)
+      </a>
       <a class="nav-item" data-page="actions" onclick="navigateTo('actions')">
         <span class="nav-icon">⚡</span> Action Cards
       </a>
@@ -158,6 +164,65 @@
         <button class="tab" data-filter="warning" onclick="filterInsights('warning')">Warnings</button>
       </div>
       <div class="insights-grid" id="insights-grid"></div>
+    </section>
+
+    <!-- ═══ PAGE: Conversion Funnels ═══ -->
+    <section class="page" id="page-funnels">
+      <div class="page-header">
+        <div>
+          <h1 class="page-title">Conversion Funnels</h1>
+          <p class="page-subtitle">Session-to-purchase paths — aligned with L1 <strong>Conversion</strong> diagnostics (demo data)</p>
+        </div>
+        <div class="date-pills">
+          <button class="pill">7 Days</button>
+          <button class="pill active">30 Days</button>
+          <button class="pill">90 Days</button>
+        </div>
+      </div>
+      <div class="funnel-hero card" id="funnel-hero"></div>
+      <div class="dual-grid funnel-dual">
+        <div class="card funnel-card" id="funnel-primary-wrap">
+          <h3 class="card-title">Primary funnel — all traffic</h3>
+          <div class="funnel-canvas-wrap">
+            <canvas id="funnel-chart-primary" height="220"></canvas>
+          </div>
+          <div id="funnel-stages-primary"></div>
+        </div>
+        <div class="card funnel-card" id="funnel-mobile-wrap">
+          <h3 class="card-title">Mobile vs desktop — same stages</h3>
+          <div class="funnel-canvas-wrap">
+            <canvas id="funnel-chart-split" height="220"></canvas>
+          </div>
+          <div id="funnel-split-legend"></div>
+        </div>
+      </div>
+      <div class="card" id="funnel-insights"></div>
+    </section>
+
+    <!-- ═══ PAGE: Customer Segmentation (RFM) ═══ -->
+    <section class="page" id="page-rfm">
+      <div class="page-header">
+        <div>
+          <h1 class="page-title">Customer Segmentation</h1>
+          <p class="page-subtitle">Recency · Frequency · Monetary scoring — prioritize retention plays before acquisition scale (demo data)</p>
+        </div>
+        <button class="btn-accent" onclick="renderRfm(); showToast('RFM snapshot refreshed (demo).')">🔄 Refresh segments</button>
+      </div>
+      <div class="rfm-kpi-row" id="rfm-kpis"></div>
+      <div class="dual-grid rfm-dual">
+        <div class="card" id="rfm-matrix-card">
+          <h3 class="card-title">RFM score distribution (quintiles)</h3>
+          <div class="rfm-matrix-wrap">
+            <canvas id="rfm-heatmap" height="260"></canvas>
+          </div>
+          <p class="rfm-matrix-note" id="rfm-matrix-note"></p>
+        </div>
+        <div class="card" id="rfm-segments-card">
+          <h3 class="card-title">Named segments &amp; revenue mix</h3>
+          <div id="rfm-segments-list"></div>
+        </div>
+      </div>
+      <div class="card" id="rfm-actions-strip"></div>
     </section>
 
     <!-- ═══ PAGE: Action Cards ═══ -->
