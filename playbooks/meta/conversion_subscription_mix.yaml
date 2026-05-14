@@ -8,6 +8,7 @@ meta_pattern:
   module: conversion
   version: "1.0"
   tags: [subscription_rate, mix_dilution, measurement_artifact]
+  pattern_class: metric_integrity  # Phase 2 pre-registration: MetricGuard routing hook [ADR-0005]
   reusable: true
   description: >
     Detects when aggregate subscription rate is distorted by SKU mix or

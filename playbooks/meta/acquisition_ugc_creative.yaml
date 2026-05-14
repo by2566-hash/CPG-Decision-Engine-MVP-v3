@@ -1,0 +1,138 @@
+# ── Meta-Pattern: Acquisition — CAC/CPM Rise from Creative Format Mix ─────────
+# Layer 1 (platform-level) [ADR-0011]
+# RULE: Zero hardcoded threshold numbers. All thresholds use ${thresholds.key}.
+# ─────────────────────────────────────────────────────────────────────────────
+
+meta_pattern:
+  id: acquisition_ugc_creative
+  module: acquisition
+  version: "1.0"
+  tags: [cac, cpm, creative_mix, ugc, meta_ads, format_composition]
+  reusable: true
+  description: >
+    Detects CAC and CPM rises caused by creative format composition — specifically,
+    when brand-produced creative dominates spend at the expense of UGC formats
+    that convert at materially lower cost. The trigger signal is simultaneous CAC
+    and CPM elevation with no change in spend, audience targeting, or campaign
+    structure, which isolates creative composition as the primary variable.
+
+    Conceptually related to acquisition_cac_channel_mix: both detect CAC
+    degradation from an upstream compositional variable. acquisition_cac_channel_mix's
+    upstream variable is channel destination routing (website vs on-platform
+    destinations). This pattern's upstream variable is creative format mix (UGC
+    vs brand-produced vs offer-led). No code-level inheritance — V3 has no
+    meta-pattern composition mechanism. The relationship is documentary only.
+
+    Root cause type: creative_composition (not channel routing, not audience mix,
+    not bid strategy). The correct first-pass audit is creative format distribution,
+    not media channels or audiences.
+
+triggers:
+  - name: cac_and_cpm_rising_stable_structure
+    msm_state: DEGRADING
+    condition: >
+      cac_7d_vs_baseline > ${thresholds.cac_spike_ratio}
+      AND cpm_7d_vs_baseline > ${thresholds.cpm_spike_ratio}
+    metric: cac_7d_vs_baseline
+    note: >
+      Both CAC and CPM rising simultaneously with no change in spend/audience/structure
+      isolates creative composition as the variable. CPM signal is key differentiator
+      from acquisition_cac_channel_mix (which fires on CAC alone via destination routing).
+
+  - name: creative_mix_unhealthy
+    msm_state: WATCH
+    condition: >
+      cac_7d_vs_baseline > ${thresholds.cac_spike_ratio}
+      AND creative_ugc_share < ${thresholds.creative_ugc_share_floor}
+    metric: creative_ugc_share
+    note: >
+      WATCH fires when UGC share of active creative spend is below the healthy floor,
+      even before CAC/CPM fully degrade. Enables proactive audit before full deterioration.
+
+analysis_path:
+  - step: audit_creative_format_distribution
+    description: >
+      Break out active creative by content type: UGC vs brand-produced vs offer-led.
+      Confirm format distribution across spend. Identify whether spend is concentrated
+      in one format (e.g. 100% brand-produced before UGC program).
+    data_source: campaign_table
+    output_metric: creative_format_share_of_spend
+    must_run_first: true
+
+  - step: compare_cac_by_creative_format
+    description: >
+      For each creative format, extract CAC and CPM over the evaluation window.
+      Identify whether CAC/CPM performance is concentrated in a single format.
+      A large gap between formats confirms format composition as the root cause.
+    data_source: platform_analytics
+    output_metric: cac_by_creative_format
+
+  - step: confirm_no_structural_change
+    description: >
+      Verify that spend level, audience targeting, campaign structure, and bid
+      strategy are materially unchanged during the evaluation window.
+      Structural changes would disqualify creative composition as the primary variable.
+    data_source: campaign_table
+    output_metric: structural_change_flag
+    decision_gate: "structural_change_flag == false"
+
+  - step: identify_top_performing_format
+    description: >
+      Rank creative formats by CAC (ascending) and CPM (ascending).
+      Confirm which format(s) drive lowest acquisition cost.
+      This is the format to scale spend behind.
+    data_source: platform_analytics
+    output_metric: top_creative_format_by_cac
+
+root_cause_type: creative_composition
+
+actions:
+  - id: AUDIT_CREATIVE_MIX
+    type: DIAGNOSTIC
+    description: >
+      Audit active creative by content type and confirm format distribution before
+      any media action. Do not adjust bids, audiences, or channels until creative
+      composition is confirmed as the driver of CAC/CPM rise. Identify whether
+      performance is concentrated in a single format.
+    expected_utility_basis:
+      business_logic: >
+        Prevents misattributing CAC rise to media efficiency (wrong lever) when
+        creative composition is the actual variable. Correct diagnosis enables
+        creative rotation rather than channel pause, preserving reach while
+        recovering CAC.
+      gmv_lift_formula: >
+        prevented_wrong_channel_action_cost / monthly_gmv × cac_recovery_probability
+    requires_approval: false
+    rollback_available: false
+
+  - id: SCALE_TOP_CREATIVE
+    type: CREATIVE_CONTROL
+    description: >
+      After audit confirms format performance gap, scale spend behind top-performing
+      creative format (e.g. UGC). Shift budget from underperforming formats within
+      the same channel. Do not pause the channel — only rebalance format mix.
+    expected_utility_basis:
+      business_logic: >
+        Scaling the lower-CAC creative format while holding channel and audience
+        constant recovers blended CAC without sacrificing reach or audience learning.
+        UGC format demonstrated materially lower CAC and CPM in the reference case.
+      gmv_lift_formula: >
+        cac_improvement_pct × (monthly_new_customers × aov / monthly_gmv)
+    requires_approval: true
+    rollback_available: true
+
+evidence_refs_template:
+  - "CAC 7d: ${metrics.cac_7d} vs 30d baseline: ${metrics.cac_baseline_30d}"
+  - "CPM 7d: ${metrics.cpm_7d} vs 30d baseline: ${metrics.cpm_baseline_30d}"
+  - "UGC share of creative spend: ${metrics.creative_ugc_share}"
+  - "CAC by format — UGC: ${metrics.ugc_cac} vs brand-produced: ${metrics.brand_produced_cac}"
+
+constraints:
+  attribution_window_days: 30  # Acquisition attribution window
+  applies_hard_constraints: []  # CREATIVE_CONTROL/DIAGNOSTIC — no margin/discount gate
+
+partner_clarifications_needed:
+  - "At what CPM-vs-baseline ratio does creative composition become the primary suspect over bid strategy?"
+  - "Is the UGC share floor (below which WATCH fires) category-specific or brand-specific?"
+  - "What is the minimum test period for UGC creative before drawing performance conclusions?"
+  - "Does this pattern apply equally to TikTok Spark Ads, or is it Meta-specific?"

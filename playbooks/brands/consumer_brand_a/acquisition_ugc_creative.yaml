@@ -1,0 +1,41 @@
+# ── Brand Binding: Consumer Brand A × acquisition_ugc_creative ───────────────
+# Layer 2 (brand-level) [ADR-0011]
+# RULE: No raw evidence data here. Evidence lives in use_cases/consumer_brand_a/.
+# ─────────────────────────────────────────────────────────────────────────────
+
+brand: consumer_brand_a
+meta_pattern_ref: acquisition_ugc_creative
+binding_version: "1.0"
+
+entity_bindings:
+  primary_ad_platform: meta
+  creative_formats: [ugc, brand_produced]  # formats in active rotation
+  ugc_program_type: structured_creator_program
+
+thresholds:
+  cac_spike_ratio: 1.15          # CAC >15% above 30d baseline → acquisition WATCH
+  cpm_spike_ratio: 1.20          # CPM >20% above 30d baseline → creative audit trigger
+  creative_ugc_share_floor: 0.20 # UGC below 20% of creative spend → WATCH (prior: 0% before program)
+  calibration_status: partner_prior
+
+action_utility_priors:
+  AUDIT_CREATIVE_MIX:
+    # Full derivation: see use_cases/consumer_brand_a/cba_001_ugc_creative.yaml
+    gmv_lift_prior: 0.04
+    confidence: 0.45             # partner judgment, no specific dollar outcome for diagnostic
+    calibration_status: partner_prior
+    evidence_case: "cba_001"
+
+  SCALE_TOP_CREATIVE:
+    # Full derivation: see use_cases/consumer_brand_a/cba_001_ugc_creative.yaml
+    gmv_lift_prior: 0.08
+    estimated: true
+    confidence: 0.60             # real observed data, directionally confirmed (specific CAC numbers)
+    calibration_status: partner_prior
+    evidence_case: "cba_001"
+
+evidence_refs_template:
+  - "CBA CAC 7d: ${metrics.cac_7d} vs 30d baseline: ${metrics.cac_baseline_30d}"
+  - "CBA CPM 7d: ${metrics.cpm_7d} vs 30d baseline: ${metrics.cpm_baseline_30d}"
+  - "UGC share of creative spend: ${metrics.creative_ugc_share} (floor: 20%)"
+  - "CAC by format — UGC: ${metrics.ugc_cac}, brand-produced: ${metrics.brand_produced_cac}"

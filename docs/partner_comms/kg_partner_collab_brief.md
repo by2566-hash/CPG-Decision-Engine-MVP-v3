@@ -7,6 +7,17 @@
 
 ---
 
+## 状态更新
+
+**2026-04-14 update on Wandering Bear scope**: wb_003 和 wb_006 在 audit 中
+被识别为 pre-three-layer 翻译，已 quarantine 到 `use_cases/wandering_bear/_legacy/`。
+这两个 case 当前不在 active KG 系统中。下方对 wb_006 阈值的问题（库存安全天数、
+SKU 集中度）暂时降级为 **non-urgent** —— 答案在我们决定是否激活 wb_006 时
+才需要。如果 Partner 在下次同步时主动提及，记下答案但不要把它们加进 active
+brand binding。
+
+---
+
 ## 第一件事：你的内容是怎么进入系统的
 
 我没有用 LLM 去"翻译"你的内容。
@@ -47,7 +58,7 @@
 我把每个 issue 归到一个 `root_cause_type`（mix_problem / measurement_artifact / channel_routing / budget_allocation）。这个分类决定系统会用什么逻辑链去推理它。如果我分错了，下游的一切都会偏。
 
 **2. action_id 语义**
-每个 action 在系统里有一个 ID（比如 `DIAGNOSE_MIX`、`FIX_DENOMINATOR`、`PAUSE_CHANNEL`）。这个 ID 决定系统给商家显示什么建议，以及如何计算这个建议的价值。如果 ID 的语义和你的意图不符，商家会收到错误的指令。
+每个 action 在系统里有一个 ID（比如 `DIAGNOSE_MIX`、`FIX_DENOMINATOR`、`FIX_DESTINATION_ROUTING`）。这个 ID 决定系统给商家显示什么建议，以及如何计算这个建议的价值。如果 ID 的语义和你的意图不符，商家会收到错误的指令。
 
 **3. gmv_lift_prior 的数值**
 这是最需要你确认的一个。每个 action 都有一个 `gmv_lift_prior`，这是系统对"这个 action 能带来多少 GMV 提升"的初始估计。我根据你的数据用公式推导了每个值，但公式的选择本身就是一个判断。

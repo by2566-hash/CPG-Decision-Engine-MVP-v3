@@ -63,9 +63,13 @@ def run_dryrun(playbook_dir: str | None, module_filter: str | None) -> int:
         else:
             actions = pb.get("actions", [])
             utilities = [a.get("expected_utility") for a in actions if a.get("expected_utility") is not None]
-            print(f"  ✓  {src}  ({len(actions)} actions, "
-                  f"utility range: {min(utilities):.2f}–{max(utilities):.2f}"
-                  if utilities else f"  ✓  {src}  ({len(actions)} actions, no utility values)")
+            is_meta = pb.get("_is_meta", False)
+            meta_tag = " [meta-pattern: U_base from brand bindings]" if is_meta else ""
+            if utilities:
+                print(f"  ✓  {src}{meta_tag}  ({len(actions)} actions, "
+                      f"utility range: {min(utilities):.2f}–{max(utilities):.2f})")
+            else:
+                print(f"  ✓  {src}{meta_tag}  ({len(actions)} actions)")
 
     # ── 2. Route simulation: module × MSM state ───────────────────────────
     print(f"\n[2/2] Route simulation (module × MSM state)\n")

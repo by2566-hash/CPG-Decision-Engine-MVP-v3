@@ -31,8 +31,22 @@ env/
 .coverage
 htmlcov/
 
+# Secrets — never commit credentials
+.env
+.env.local
+.env.*.local
+
 # Local-only content
 partner_drafts/
 
+# L5 Decision Logs (JSONL — local dev only; use shared path or PostgreSQL in production)
+data/decision_logs/
+
 # Jupyter
 .ipynb_checkpoints/
+
+# Ignore local raw data
+Data/*.csv
+Data/*.json
+coverage.json
+Data/*.yml

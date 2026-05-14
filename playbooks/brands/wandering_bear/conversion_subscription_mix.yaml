@@ -15,36 +15,34 @@ entity_bindings:
 
 thresholds:
   # All values are partner_prior — will update to outcome_calibrated after N≥10 outcomes
-  sub_rate_alert_pct: -0.03               # sub rate WoW delta below -3pp → WATCH
-  sub_rate_critical_pct: -0.06            # sub rate WoW delta below -6pp → DEGRADING
-  sku_concentration_threshold: 0.40       # single SKU >40% of orders → check for mix
+  sub_rate_alert_pct: -0.027              # WATCH trigger [partner_prior: Shaungh 2026-04-16]
+  # Derivation: Shaungh calibrated as 15% RELATIVE drop (not absolute pp).
+  # WB sub rate baseline excl. distortors ≈ 18% → 18% × 0.15 = 2.7pp → -0.027
+  # Note: threshold semantics are relative-%-derived but stored as absolute pp delta for
+  # current trigger compatibility. Phase 2 enhancement: convert meta-pattern trigger to
+  # relative comparison (subscription_rate_pop_delta / baseline < -threshold).
+  sub_rate_critical_pct: -0.06            # DEGRADING trigger — awaiting Shaungh critical calibration
+  sku_concentration_threshold: 0.30       # single SKU >30% of orders → check for mix [partner_prior: Shaungh 2026-04-16]
   mix_diagnosis_min_delta_pp: 2.0         # adjusted vs reported delta >2pp confirms mix
   calibration_status: partner_prior
   # To update: run reward_backfill.py after N≥10 real outcomes, set outcome_calibrated
 
 action_utility_priors:
   DIAGNOSE_MIX:
-    # Cases 1+2: diagnostic prevention of sitewide redesign + sub rate protection
+    # Full derivation: see use_cases/wandering_bear/wb_001_subscription_mix_dilution.yaml
     gmv_lift_prior: 0.08
-    # Derivation: prevented misdiagnosis (cases wb_001, wb_002)
-    #   Sub rate protection: ~4pp sub rate improvement × subscription LTV premium
-    #   Prevented cost: avoided sitewide subscription redesign (est. 2-4 weeks eng)
-    #   Method: diagnostic_prevention_value
     confidence: 0.75               # high: specific numbers confirmed in use cases
     calibration_status: partner_prior
     evidence_case: "wb_001"        # primary evidence: SKU mix dilution case
 
   FIX_DENOMINATOR:
-    # Case 2: ShopCash denominator fix → channel budget reallocation
+    # Full derivation: see use_cases/wandering_bear/wb_002_shopcash_denominator.yaml
     gmv_lift_prior: 0.05
-    # Derivation: measurement fix + ShopCash budget reallocation
-    #   Adjusted sub rate normalized after exclusion → budget reallocated to higher-quality channels
-    #   Method: diagnostic_prevention_value (indirect GMV impact via correct budget allocation)
     confidence: 0.70
     calibration_status: partner_prior
     evidence_case: "wb_002"        # ShopCash denominator fix
 
 evidence_refs_template:
   - "WB subscription rate reported delta: ${metrics.subscription_rate_pop_delta} WoW"
-  - "PM SKU order share: ${metrics.top_sku_order_share} (WB baseline ~52%)"
+  - "PM SKU order share: ${metrics.top_sku_order_share} (See evidence case wb_001 for PM order-share baseline)"
   - "ShopCash order share: ${metrics.shopcash_order_share} of total orders"

@@ -19,11 +19,12 @@ import pytest
 from fastapi.testclient import TestClient
 
 from src.decision_engine import db_client
+from src.decision_engine.config import settings
 from src.decision_engine.layer4_serving.pipeline import run_once
 from src.decision_engine.layer4_serving.fast_plane import FastPlane
 from api.app import app
 
-client = TestClient(app)
+client = TestClient(app, headers={"X-API-Key": settings.api_key})
 
 # Signals that produce retention=DEGRADING, all others HEALTHY
 _SIGNALS = {
@@ -284,3 +285,70 @@ class TestFastPlane:
             fp.serve("m_nonexistent_cache_miss")
 
         assert exc_info.value.status_code == 503
+
+
+class TestPolicyEndpoints:
+    """POST /policy/{merchant_id} and GET /policy/{merchant_id}."""
+
+    def test_create_policy_success(self):
+        """POST /policy creates a PolicyPack and returns 200 with expected fields."""
+        resp = client.post(
+            "/policy/merchant_policy_test",
+            json={
+                "policy_version": "v_test_001",
+                "vertical": "cpg",
+                "policy_weights": {"beta1": 0.65, "beta2": 0.25, "beta3": 0.10},
+            },
+        )
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["status"] == "created"
+        assert body["merchant_id"] == "merchant_policy_test"
+        assert body["policy_version"] == "v_test_001"
+        assert body["vertical"] == "cpg"
+
+    def test_create_policy_then_get_returns_same_payload(self):
+        """GET /policy returns the policy that was just created via POST."""
+        client.post(
+            "/policy/merchant_policy_get",
+            json={
+                "policy_version": "v_get_001",
+                "vertical": "cpg",
+                "custom_field": "custom_value",
+            },
+        )
+        resp = client.get("/policy/merchant_policy_get")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["merchant_id"] == "merchant_policy_get"
+        assert body["policy"]["policy_version"] == "v_get_001"
+        assert body["policy"]["custom_field"] == "custom_value"
+
+    def test_create_policy_rejects_bad_weights(self):
+        """POST /policy returns 422 when beta weights sum deviates > 0.05 from 1.0."""
+        resp = client.post(
+            "/policy/merchant_bad_weights",
+            json={
+                "policy_version": "v_bad",
+                "vertical": "cpg",
+                "policy_weights": {"beta1": 0.50, "beta2": 0.50, "beta3": 0.50},
+            },
+        )
+        assert resp.status_code == 422
+        assert "beta1+beta2+beta3" in resp.json()["detail"]
+
+    def test_create_policy_allows_missing_weights(self):
+        """POST /policy succeeds when policy_weights is omitted entirely."""
+        resp = client.post(
+            "/policy/merchant_no_weights",
+            json={
+                "policy_version": "v_no_weights",
+                "vertical": "cpg",
+            },
+        )
+        assert resp.status_code == 200
+
+    def test_get_policy_returns_404_for_unknown_merchant(self):
+        """GET /policy returns 404 when no PolicyPack exists for the merchant."""
+        resp = client.get("/policy/merchant_does_not_exist_xyz")
+        assert resp.status_code == 404

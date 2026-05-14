@@ -273,3 +273,116 @@ class TestRenderBrandTriggers:
     def test_returns_none_for_unknown_merchant(self, registry):
         result = registry.render_brand_triggers("triggers: []", "unknown_merchant", "pattern")
         assert result is None
+
+
+# ── Tests: dormant threshold key enforcement ──────────────────────────────────
+
+class TestDormantThresholdKeyEnforcement:
+    """Pre-flight 2 (2026-04-13): _DORMANT_THRESHOLD_KEYS enforcement.
+
+    Dormant keys belong to Phase 2 deferred patterns (playbooks/meta/_deferred/).
+    An active brand binding referencing a dormant key must emit a distinctive
+    WARNING. The load still succeeds (never raises — architectural invariant)
+    but the warning must be treated as a hard error before shipping.
+
+    See: docs/playbook_authoring_sop.md Section 5 / ADR-0012.
+    """
+
+    def test_active_brand_binding_cannot_reference_dormant_threshold_key(
+        self, tmp_path, caplog
+    ):
+        """A brand binding with a dormant threshold key must emit a [DORMANT] warning.
+
+        Enforcement shape: load succeeds (architectural invariant — never raises),
+        but a log.warning containing 'DORMANT' is emitted for each dormant key.
+        The binding itself is still indexed — the warning is the guard mechanism.
+
+        If this test fails:
+        - The dormant key check was removed from _validate_brand_binding().
+          Restore it before _KNOWN_THRESHOLD_KEYS check. See ADR-0012.
+        - A dormant key was promoted to _KNOWN_THRESHOLD_KEYS prematurely.
+          Only promote when all Phase 2 dependencies in blocked_by are resolved.
+        """
+        import logging
+        import textwrap
+        from src.decision_engine.layer2_decision.pillar1_kg.playbook_registry import PlaybookRegistry
+
+        # Build a minimal brand binding referencing a dormant key
+        brand_dir = tmp_path / "brands" / "rogue_brand"
+        brand_dir.mkdir(parents=True)
+        (brand_dir / "some_pattern.yaml").write_text(textwrap.dedent("""\
+            brand: rogue_brand
+            meta_pattern_ref: some_pattern
+            binding_version: "1.0"
+            entity_bindings: {}
+            thresholds:
+              cac_improvement_floor: -0.30
+              offer_creative_share_threshold: 0.50
+              calibration_status: partner_prior
+            action_utility_priors: {}
+        """))
+
+        registry = PlaybookRegistry(playbook_dir=str(tmp_path))
+
+        with caplog.at_level(logging.WARNING, logger="src.decision_engine"):
+            registry.load_brand_binding("rogue_brand")
+
+        # Both dormant keys must trigger distinct warnings
+        dormant_warnings = [
+            r.message for r in caplog.records
+            if r.levelname == "WARNING" and "DORMANT" in r.message
+        ]
+        assert len(dormant_warnings) >= 2, (
+            f"Expected ≥ 2 DORMANT warnings (one per dormant key), got {len(dormant_warnings)}. "
+            f"Warnings: {dormant_warnings}. "
+            "Check that _validate_brand_binding() checks _DORMANT_THRESHOLD_KEYS before "
+            "_KNOWN_THRESHOLD_KEYS. See ADR-0012 and SOP Section 5."
+        )
+
+        # Confirm the specific keys are called out
+        all_warning_text = " ".join(dormant_warnings)
+        assert "cac_improvement_floor" in all_warning_text, (
+            "DORMANT warning must name 'cac_improvement_floor' explicitly."
+        )
+        assert "offer_creative_share_threshold" in all_warning_text, (
+            "DORMANT warning must name 'offer_creative_share_threshold' explicitly."
+        )
+
+    def test_active_threshold_key_does_not_trigger_dormant_warning(
+        self, tmp_path, caplog
+    ):
+        """An active threshold key must NOT trigger a DORMANT warning.
+
+        Regression guard: ensures that adding new keys to _DORMANT_THRESHOLD_KEYS
+        does not accidentally shadow active keys that share a name pattern.
+        """
+        import logging
+        import textwrap
+        from src.decision_engine.layer2_decision.pillar1_kg.playbook_registry import PlaybookRegistry
+
+        brand_dir = tmp_path / "brands" / "normal_brand"
+        brand_dir.mkdir(parents=True)
+        (brand_dir / "some_pattern.yaml").write_text(textwrap.dedent("""\
+            brand: normal_brand
+            meta_pattern_ref: some_pattern
+            binding_version: "1.0"
+            entity_bindings: {}
+            thresholds:
+              cac_spike_ratio: 1.15
+              calibration_status: partner_prior
+            action_utility_priors: {}
+        """))
+
+        registry = PlaybookRegistry(playbook_dir=str(tmp_path))
+
+        with caplog.at_level(logging.WARNING, logger="src.decision_engine"):
+            registry.load_brand_binding("normal_brand")
+
+        dormant_warnings = [
+            r for r in caplog.records
+            if r.levelname == "WARNING" and "DORMANT" in r.message
+        ]
+        assert dormant_warnings == [], (
+            f"Active key 'cac_spike_ratio' triggered a DORMANT warning: {dormant_warnings}. "
+            "It must be in _KNOWN_THRESHOLD_KEYS, not _DORMANT_THRESHOLD_KEYS."
+        )

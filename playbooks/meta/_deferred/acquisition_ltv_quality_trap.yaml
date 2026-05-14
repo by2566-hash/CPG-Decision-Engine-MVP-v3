@@ -1,0 +1,232 @@
+# ── Meta-Pattern: Acquisition — LTV Quality Trap (DORMANT) ───────────────────
+# Layer 1 (platform-level) [ADR-0011]
+#
+# STATUS: DORMANT — not loaded by PlaybookRegistry (in _deferred/ directory)
+# Activation requires Phase 2 Track A delivery. See blocked_by section.
+#
+# Case source: Consumer Brand B — cbb_001 (Offer-Heavy Creative / LTV Quality Trap)
+#   Retargeting CAC improved ~51% ($155 → $76) via offer-led creative.
+#   Within 60-75 days, second order rate for Meta-driven cohorts declined.
+#   Creative pulled to prevent scaling lower-value cohort.
+#
+# Why dormant: trigger condition requires second_order_rate_delta, which is a
+# creative-level cohort attribution metric unavailable in Phase 1.
+# Phase 1 DecisionFeatureVector has repeat_rate_7d (population-level only).
+# Population-level repeat rate CANNOT distinguish offer-led efficiency gain
+# from genuine efficiency gain — using it as proxy causes false positives.
+#
+# Reactivation: see blocked_by section. Do NOT activate without all three.
+# ─────────────────────────────────────────────────────────────────────────────
+
+activation_phase: 2
+cross_module: true
+requires_retention_validation: true
+
+blocked_by:
+  - dependency: creative_level_cohort_attribution
+    description: >
+      Meta Ads API creative-level attribution so second order rate can be
+      segmented by creative type (offer-led vs value-led) within a retargeting
+      audience. Requires Shopline API access (Phase 2 Track A).
+    owned_by: phase_2_track_a
+    adr_ref: ADR-0006
+
+  - dependency: post_purchase_cohort_tracking_60_75d
+    description: >
+      L5 Outcome Log must accumulate 60-75 day post-purchase cohort data per
+      creative type. Requires real execution data with creative attribution.
+      Cannot be backfilled from historical data without creative-level tagging.
+    owned_by: phase_2_track_a
+    adr_ref: ADR-0006
+
+  - dependency: second_order_rate_delta_field_in_dfv
+    description: >
+      DecisionFeatureVector must include second_order_rate_delta as a named field
+      (cohort-level, creative-attributed). Adding it as Optional[float] to
+      contracts.py is the Phase 2 implementation task. Population-level
+      repeat_rate_7d is NOT a valid proxy (would cause false positives on
+      every acquisition WATCH event regardless of creative mix).
+    owned_by: phase_2_track_b
+    field_path: src/decision_engine/contracts.py:DecisionFeatureVector
+    adr_ref: ADR-0005
+
+  - dependency: reward_validity_gate_implementation
+    description: >
+      The soft_guard.inject_retention_warning field in this pattern is a
+      rendering hint for LLMRenderer — it injects a warning into the
+      DecisionCard text. It is NOT a reward gate. A real RewardValidityGuard
+      must be implemented in L5 (reward_backfill.py) before LinUCB is permitted
+      to accept T+0 CAC improvement as a reward signal for this pattern.
+      Without the gate, the bandit will learn from a false positive signal:
+      CAC improved at T+0 looks like a successful outcome, but the actual
+      failure (LTV degradation) manifests at T+60-75d.
+      Implementation requires: (1) L5 outcome log accumulates 60-75d post-
+      purchase cohort data, (2) reward_backfill.py validates retention signal
+      before finalizing reward for offer-led creative actions, (3) LinUCB
+      bandit is gated to only accept final (not proxy) reward for CREATIVE_CONTROL
+      actions in acquisition patterns with cross_module: true.
+    owned_by: phase_3_bandit
+    adr_ref: ADR-0008
+
+  - dependency: runtime_action_surface_wiring
+    description: >
+      Both action IDs defined in this pattern (PAUSE_OFFER_CREATIVE and
+      VALIDATE_BEFORE_SCALE) must be wired into the runtime action-surface
+      layers before this pattern can be activated:
+        1. ImpactCalculator.INDUSTRY_BENCHMARKS
+           (src/decision_engine/layer3_value/impact_calculator.py) —
+           both action IDs must have benchmark entries under "acquisition"
+           so the fallback utility path does not silently return 0.0.
+        2. LLMRenderer._TEMPLATES
+           (src/decision_engine/layer2_decision/pillar3_llm/llm_renderer.py) —
+           both action IDs must have "diagnosis" and "recommendation" dict
+           entries under "acquisition" so DecisionCard rendering does not
+           fall back to the default template.
+      Neither entry exists today. Activating the pattern without these wires
+      will produce silent fallback behavior (0.0 utility, generic card text),
+      not an error, making the gap hard to detect post-activation.
+    owned_by: phase_2_track_b
+    adr_ref: ADR-0011
+
+meta_pattern:
+  id: acquisition_ltv_quality_trap
+  module: acquisition
+  version: "0.1-dormant"
+  tags: [cac, retargeting, ltv, cohort_quality, offer_creative, cross_module]
+  reusable: true
+  description: >
+    Detects when CAC improvement on a retargeting audience is driven by
+    lower-quality conversions from offer-led creative, rather than genuine
+    efficiency gain. The signal is a suspicious CAC improvement (WATCH)
+    that has not been validated against cohort repeat purchase behavior.
+
+    Cross-module pattern: acquisition module is the DECISION object
+    ("should I scale this retargeting spend?"), but retention module signals
+    are the EVIDENCE source ("is this cohort repeating at healthy rates?").
+    Decision-evidence decoupling — evidence location ≠ decision module.
+
+    The LTV quality trap manifests at T+60-75d, not at conversion time.
+    Using DEGRADING would be wrong — the problem does not exist "now",
+    it exists as a risk that materializes later if spend is scaled.
+    WATCH is correct: "looks good but system is uncertain, do not scale."
+
+# Note: trigger uses ${thresholds.*} per Magic Number Iron Rule (SOP Section 2).
+# Threshold values will be set in brand binding at activation time.
+triggers:
+  - name: cac_improving_suspiciously
+    msm_state: WATCH
+    condition: >
+      cac_7d_vs_baseline < ${thresholds.cac_improvement_floor}
+      AND creative_offer_share > ${thresholds.offer_creative_share_threshold}
+    metric: cac_7d_vs_baseline
+    activation_gate: second_order_rate_delta  # field must exist in DFV before this trigger is live
+    note: >
+      "Improving suspiciously" = CAC is below the baseline improvement floor,
+      meaning the improvement may be driven by offer-led creative attracting
+      low-quality converters rather than genuine efficiency.
+
+analysis_path:
+  # Step 1: confirm CAC improvement is creative-attributed (not audience mix)
+  - step: isolate_creative_driver
+    description: >
+      Break out CAC by creative type (offer-led vs value-led) within the
+      retargeting audience. Confirm improvement is concentrated in offer-led
+      creative, not from audience mix change or bid optimization.
+    data_source: meta_ads_creative_attribution
+    output_metric: cac_by_creative_type
+    required_field: creative_level_cohort_attribution
+    must_run_first: true
+    rationale: >
+      CAC improvement on retargeting can come from audience learning (safe to scale),
+      bid optimization (safe to scale), or offer-led creative attracting
+      lower-quality converters (do NOT scale until retention validates).
+      The creative attribution split is the only valid first check.
+
+  - step: track_second_order_rate_by_cohort
+    description: >
+      At T+30, T+60, and T+75 days post-conversion, compare second order rate
+      for offer-led cohort vs value-led cohort. Flag if offer-led cohort's
+      second order rate declines vs baseline.
+    data_source: l5_outcome_log
+    output_metric: second_order_rate_delta_by_creative
+    window_days: [30, 60, 75]
+    required_field: second_order_rate_delta
+
+  - step: cross_check_third_order
+    description: >
+      Early third order rate decline alongside second order rate is a stronger
+      signal of structural LTV degradation (not just delayed repurchase).
+      Check third order rate for the offer-led cohort at T+75.
+    data_source: l5_outcome_log
+    output_metric: third_order_early_rate
+
+  - step: compare_revenue_per_user_30_60_90
+    description: >
+      Compare 30/60/90-day revenue per user across offer-led vs value-led cohorts.
+      Declining RPU trajectory confirms downstream LTV degradation.
+    data_source: l5_outcome_log
+    output_metric: revenue_per_user_by_cohort
+
+root_cause_type: cohort_quality_degradation
+
+actions:
+  - id: PAUSE_OFFER_CREATIVE
+    type: CREATIVE_CONTROL
+    description: >
+      Pull or rebalance offer-led creative immediately if cohort second order
+      rate declines vs value-led cohort baseline. Do not pause the retargeting
+      audience — only the offer-led creative within it.
+    expected_utility_basis:
+      business_logic: >
+        Scaling lower-quality converters (offer-responsive, low repeat) degrades
+        blended LTV across the entire retargeting audience. Pulling the creative
+        before scaling prevents cohort quality from contaminating the broader
+        retargeting pool.
+      gmv_lift_formula: >
+        prevented_ltv_degradation_pct × (retargeting_budget / monthly_gmv) ×
+        ltv_multiplier — concrete formula requires Phase 2 cohort data
+    requires_approval: true
+    rollback_available: true
+
+  - id: VALIDATE_BEFORE_SCALE
+    type: DIAGNOSTIC
+    description: >
+      Do not scale retargeting efficiency gains without retention validation.
+      Hold spend flat at current level. Set a T+60d review checkpoint. Only
+      scale if second order rate for offer-led cohort matches value-led baseline.
+    expected_utility_basis:
+      business_logic: >
+        The cost of premature scaling (acquiring a cohort that doesn't repeat)
+        is borne at T+60-75d, after the budget has already been deployed.
+        Holding flat until validation is the minimum-regret choice.
+      gmv_lift_formula: >
+        prevented_low_ltv_acquisition_cost / monthly_gmv
+    requires_approval: false
+    rollback_available: false
+
+evidence_refs_template:
+  - "CAC 7d vs baseline: ${metrics.cac_7d_vs_baseline}"
+  - "Offer-led creative share of retargeting spend: ${metrics.offer_creative_share}"
+  - "Second order rate (offer cohort T+60): ${metrics.second_order_rate_offer_60d}"
+  - "Second order rate (value cohort T+60): ${metrics.second_order_rate_value_60d}"
+
+constraints:
+  attribution_window_days: 75  # LTV quality trap manifests at T+60-75d
+  cross_module_evidence_required: [retention_state]
+  applies_hard_constraints: []
+
+# Soft-guard configuration for LLM renderer (Option B)
+# These fields activate injection of retention warning into DecisionCard.recommendation
+# even before ConstraintEngine Option A is implemented (Phase 2).
+soft_guard:
+  inject_retention_warning: true
+  warning_text: >
+    RETENTION VALIDATION REQUIRED before scaling: CAC improvement on retargeting
+    audiences must be validated against 60-75 day second order rate before spend
+    increase. Do not scale until cohort repeat purchase rate is confirmed.
+
+partner_clarifications_needed:
+  - "cbb_001: At what offer-creative share of retargeting spend does LTV risk become material?"
+  - "cbb_001: What is the minimum acceptable second order rate for a healthy retargeting cohort?"
+  - "cbb_001: Does the 60-75d validation window change for different product replenishment cycles?"
+  - "cbb_001: Was the value-led creative that replaced the offer creative a specific format?"

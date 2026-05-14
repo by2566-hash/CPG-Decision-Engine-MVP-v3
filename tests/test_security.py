@@ -8,9 +8,12 @@ from fastapi.testclient import TestClient
 
 from api.app import app
 from src.decision_engine import db_client
+from src.decision_engine.config import settings
 from src.decision_engine.layer3_value.rollback_registry import RollbackRegistry
 
-client = TestClient(app)
+# Include API key in all requests. In test mode ALLOW_PLACEHOLDER_SECRETS=1 so
+# settings.api_key == "replace_me" — the middleware accepts it.
+client = TestClient(app, headers={"X-API-Key": settings.api_key})
 
 
 def _insert_transition(merchant_id: str, was_executed: bool = False) -> int:

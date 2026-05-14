@@ -65,11 +65,31 @@ Adopt a three-layer KG playbook structure:
   falls back to INDUSTRY_BENCHMARKS (priority 3). Hard clips output to
   `[0.0, 0.25]` to prevent bandit exploration weight explosion on small
   merchants with high AOV.
+- `match_playbook()`: when both a meta-pattern and a flat stub playbook exist
+  for the same module, the meta-pattern is returned first (priority). Flat
+  stubs serve as fallback when no meta-pattern covers the module.
+
+**Candidate vocabulary (runtime behavior)**: `_generate_candidates()` in
+`pipeline.py` uses the matched meta-pattern's `actions[]` list as the
+authoritative source of candidate `action_id`s. This means only actions
+declared in the meta-pattern YAML are surfaced as candidates for a merchant
+whose module routes to that pattern. When no meta-pattern matches (flat stub
+or no playbook), candidate `action_id`s fall back to `ImpactCalculator.
+INDUSTRY_BENCHMARKS` keys for that module. This is a deliberate design
+decision: the meta-pattern author (domain expert / KG partner) controls the
+action vocabulary, not the benchmark table.
 
 Calibration status is a **two-state machine**:
 - `partner_prior`: initial value from partner's business judgment
-- `outcome_calibrated`: updated after N ≥ 10 real outcome records in L5
-  (triggered by `reward_backfill.py`)
+- `outcome_calibrated`: target state after N ≥ 10 real outcome records in L5
+
+The `outcome_calibrated` value is currently validated as a schema enum
+field at brand binding load time. Automatic promotion from `partner_prior`
+to `outcome_calibrated` based on accumulated outcome counts is Phase 2
+work, dependent on `RewardBackfill` (currently stubbed at
+`src/decision_engine/layer5_wsm/reward_backfill.py`). As of 2026-04-14,
+no priors are auto-promoted by runtime code; all `outcome_calibrated`
+labels (if any exist) have been manually set.
 
 The intermediate state `shadow_data_collected` is reserved as a data
 completeness marker only (not a calibration quality state) and is not
@@ -117,10 +137,11 @@ layer has a single, well-defined responsibility.
 - Template rendering introduces `string.Template` dependency (stdlib, low risk)
 
 ### Neutral
-- Existing `INDUSTRY_BENCHMARKS` action IDs remain the candidate generation
-  vocabulary in Phase 2; meta-pattern `actions` are descriptive documentation,
-  not executable candidate definitions. Full candidate vocabulary extension is
-  Phase 3 work.
+- Meta-pattern `actions[]` is the authoritative candidate vocabulary when a
+  meta-pattern is matched (see "Candidate vocabulary" section above). When no
+  meta-pattern matches, `INDUSTRY_BENCHMARKS` keys serve as the fallback
+  vocabulary. Any future wording in this ADR or related docs must reconcile to
+  this statement — the action-authority assignment is canonical.
 - Threshold namespace (`cac_spike_ratio`, `sub_rate_alert_pct`, etc.) starts
   at v0.1 with explicit governance process for additions. Not frozen.
 
@@ -128,7 +149,8 @@ layer has a single, well-defined responsibility.
 - When Phase 3 Document Compiler is designed: compiler output should populate
   Layer 1 meta-patterns programmatically; schema must remain compatible
 - When `INDUSTRY_BENCHMARKS` action IDs are extended: meta-pattern `actions`
-  may become the authoritative vocabulary at that point
+  already serve as the authoritative vocabulary when a meta-pattern is matched;
+  extension should ensure new benchmark entries are mirrored in relevant meta-patterns
 - When a brand requires a pattern not expressible in the three-layer structure
 
 ## References

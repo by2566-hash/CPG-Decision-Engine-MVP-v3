@@ -234,6 +234,79 @@ ready to deliver KG content.
 
 ---
 
+## V3.1 Phase A — Pilot-Grade Single-Merchant System (parallel to Phase 2)
+
+**Goal**: Ship production-grade Phase A — single-merchant, single-decision-card, deterministic-first — that establishes the contracts Phase B (Scout Lane, peer benchmark) will extend.
+
+**Status**: ADRs proposed (2026-04-26); awaiting Codex review concurrence + SPIKE-014-01 entry. Implementation not started.
+
+**Relationship to Phase 2**: Independent of Track A/B. V3.1 Phase A is a vertical slice through L0–L5 with new contracts; Track A/B continue on existing scope.
+
+### Foundational ADRs (proposed, awaiting concurrence)
+- [ ] ADR-0014: V3.1 Phase A Scope and Runtime Invariants [→ADR-0014]
+- [ ] ADR-0015: Outcome Review v1 — Directional, Module-Aware, Post-Decision [→ADR-0015]
+- [ ] ADR-0016: V3.1 Truth Philosophy — Multi-Source Truth, Disagreement Policy, Gate Explainability [→ADR-0016]
+
+### Pending versioned spec docs (referenced by ADRs)
+- [~] `docs/contracts/deterministic_canonicalization_v1.md` (in progress; ADR-0014 Invariant 2)
+- [ ] `docs/contracts/snapshot_source_contract_v1.md` (ADR-0015 Contract 6)
+- [ ] `docs/contracts/confidence_band_table_v1.md` (ADR-0015 Contract 4)
+- [ ] `docs/operations/daily_snapshot_contract.md` (ADR-0014 Invariant 5)
+- [ ] `docs/operations/disagreement_detection_v1.md` (ADR-0016 Invariant 2)
+- [ ] `docs/operations/confidence_calibration_v1.md` (ADR-0015 Contract 4)
+
+### New typed contracts (Pydantic, frozen=True)
+- [ ] `DecisionCardV2` — 5-section card (observed / suspected / missing / first_fix / why) + abstain flag
+- [ ] `MerchantResponseEvent` — append-only event log row
+- [ ] `OutcomeReviewRecord` — directional post-decision review [→ADR-0015]
+- [ ] `EvidenceCompleteness` — score + gaps + abstain recommendation
+- [ ] `GateRejection` — structured Gate failure record [→ADR-0016 Invariant 3]
+- [ ] `SnapshotPayload` — typed snapshot with source/completeness fields [→ADR-0015 Contract 6]
+- [ ] `ConfidenceBreakdown` — uncertainty surfacing, not score-fusion [→ADR-0015 Contract 4]
+- [ ] `DiagnosticOutcome` — co-observation outcome for DIAGNOSTIC actions [→ADR-0015 Contract 3]
+
+### New runtime modules (non-contract code)
+- [ ] `src/decision_engine/canonical/serializer_v1.py` — single canonicalizer for DETERMINISTIC sections; emits `canonical_hash` field with `v1:{sha256}` value [→`docs/contracts/deterministic_canonicalization_v1.md`]
+
+### New DB tables (additive; no rename of existing tables)
+- [ ] `decision_cards` (FK → `wsm_transitions_v3.transition_id`)
+- [ ] `merchant_response_events` (append-only; row-locked state machine)
+- [ ] `outcome_reviews` (one row per reviewed transition)
+- [ ] `daily_signal_snapshot` (per-merchant, per-day, UTC; ADR-0014 Invariant 5)
+- [ ] `evidence_completeness_log` (per-decision evidence-gap snapshot)
+
+### Additive ALTER on existing tables
+- [ ] `wsm_transitions_v3` — workstream_id (Phase B reserve, NULL in Phase A), abstain (BOOLEAN), abstain_reason
+
+### Architecture invariant tests (new; CI-enforced)
+- [ ] `tests/architecture/test_canonical_ids.py` — no `recommendation_id` / `decision_id` in new code [→ADR-0014 Invariant 1]
+- [ ] `tests/architecture/test_gate_explainability.py` — every Gate emits complete `GateRejection` [→ADR-0016 Invariant 3]
+- [ ] `tests/architecture/test_no_adapter_outside_phase_a.py` — `_adapters.py` imports gated to L4 serving [→ADR-0014 Invariant 6]
+- [ ] `tests/architecture/test_resolver_dispatch.py` — outcome resolver dispatch invariant [→ADR-0015 Contract 3]
+- [ ] `tests/architecture/test_snapshot_source_resolution.py` — no silent zero-substitution; fallback degrades confidence [→ADR-0015 Contract 6]
+- [ ] `tests/architecture/test_single_canonicalizer.py` — assert no second canonicalizer of DETERMINISTIC sections (greps for stray `json.dumps(... sort_keys=...)`) [→`docs/contracts/deterministic_canonicalization_v1.md`]
+
+### Frozen test corpus (canonicalization)
+- [ ] `tests/canonical/test_canonicalization_v1_corpus.py` — 10 mandatory cases: round-trip stability, cross-platform stability, decimal-vs-float divergence, datetime `Z`/`+00:00` equivalence, NFC normalization, null-vs-empty distinction, list-vs-set semantics, special-float reject, naive-datetime reject, untagged-array reject [→`docs/contracts/deterministic_canonicalization_v1.md` §Testing Requirements]
+
+### Contract Spike items (pilot blockers)
+- [ ] **SPIKE-014-01**: `transition_id` type unification — int/UUID across 13 Python call sites + SQLite test fixture; pilot blocker (NOT GA blocker). See ADR-0014 Invariant 1 callout.
+- [ ] **SPIKE-014-02**: Edit re-validation chain — verify DecisionVerifier → Renderer → 5-Gate Bouncer reentry semantics for `MerchantResponseEvent(event_type="edit")` [→ADR-0014 Invariant 3]
+- [ ] **SPIKE-014-03**: State machine row-lock primitive — `SELECT FOR UPDATE` semantics in production DB; test concurrent approve/withdraw race [→ADR-0014 Invariant 4]
+- [ ] **SPIKE-014-04**: Phase A adapter inventory — measure typed↔dict adapter call sites at `layer4_serving/_adapters.py`; if exceeds 20, escalate L4-rewrite-vs-adapter trade-off [→ADR-0014 Invariant 6]
+
+### Two-Layer Acceptance
+- [ ] **Engineering GA** (internal) — all contract tests pass, all architecture invariants pass, dogfood pipeline runs end-to-end on synthetic merchant
+- [ ] **Pilot Exit** (external) — Engineering GA + all SPIKE-014-* resolved + canonicalization spec frozen at v1 + first real merchant approves at least one card
+
+### Phase A → Phase B handoff requirements
+- `_adapters.py` removed (Phase B Scout prerequisite per ADR-0014 Invariant 6)
+- `OutcomeReviewRecord.skill_class` activated for sentinel/probe/debunk/repair (currently `None` in Phase A)
+- `daily_signal_snapshot` retention extended; `weekly_signal_snapshot` aggregator built
+- Per-merchant timezone support (deferred from Phase A; pilot ships UTC-only)
+
+---
+
 ## Phase 3 — Learning Layer Activation
 
 **Goal**: Connect remaining data sources, activate learning layer, enable multi-merchant operation.

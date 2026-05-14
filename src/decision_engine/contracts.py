@@ -45,6 +45,8 @@ class MerchantStateVector(BaseModel):
 
     Used by db_client.upsert_merchant_state_vector and fetch_latest_merchant_state.
     """
+    model_config = ConfigDict(frozen=True)
+
     merchant_id: str
     computed_at: datetime
     acquisition_state: str = "HEALTHY"
@@ -62,6 +64,8 @@ class MerchantStateVector(BaseModel):
 
 class VerificationStep(BaseModel):
     """Single verification step result."""
+    model_config = ConfigDict(frozen=True)
+
     name: str
     passed: bool
     value: float = 0.0
@@ -76,6 +80,8 @@ class VerificationChain(BaseModel):
     inventory_gate, conflict_check, all_passed.
     Layers 2-3 add their own fields downstream.
     """
+    model_config = ConfigDict(frozen=True)
+
     msm_trigger: VerificationStep
     margin_gate: VerificationStep
     inventory_gate: VerificationStep
@@ -89,6 +95,8 @@ class ImpactEstimate(BaseModel):
     Phase 1: benchmark-derived priors (confidence <= 0.30)
     Phase 2+: WSM outcome-derived (confidence scales with data)
     """
+    model_config = ConfigDict(frozen=True)
+
     conservative: float = 0.0
     expected: float = 0.0
     optimistic: float = 0.0
@@ -100,6 +108,8 @@ class Counterfactual(BaseModel):
 
     Answers: 'Why this action over the next-best alternative?'
     """
+    model_config = ConfigDict(frozen=True)
+
     runner_up_action: str
     runner_up_estimate: float = 0.0
     why_not: str = ""
@@ -173,20 +183,25 @@ class DecisionCard(BaseModel):
     msm_state_summary: Optional[dict] = None
 
     # Alerts at decision time
-    alerts: list = Field(default_factory=list)
+    alerts: list[str] = Field(default_factory=list)
 
     # ── dict-style access for backward compatibility ───────────────────────
 
     def __getitem__(self, key: str):
-        """Support card["field"] access for backward compat with dict consumers."""
+        """Support card["field"] access for backward compat with dict consumers.
+
+        Uses getattr() — O(1) — instead of model_dump() — O(n fields).
+        Note: returns the Python value (e.g. datetime), not a serialized string.
+        Any caller that needs serialized output should call .model_dump() explicitly.
+        """
         try:
-            return self.model_dump()[key]
-        except KeyError:
+            return getattr(self, key)
+        except AttributeError:
             raise KeyError(key)
 
     def __contains__(self, key: str) -> bool:
         """Support 'field' in card for backward compat."""
-        return key in self.model_dump()
+        return key in DecisionCard.model_fields
 
     # ── Blueprint Section 6 classification ───────────────────────────────
 
@@ -380,9 +395,18 @@ class ScoredCandidate(BaseModel):
     urgency_score: float = Field(default=0.0, ge=0.0, le=1.0)
     rank: int = Field(default=1, ge=1)             # 1-based; 1 = highest scored
     beta_snapshot: dict = Field(default_factory=dict)  # {"beta1": float, "beta2": float, "beta3": float}
-    verification_chain: Optional[dict] = None   # VerificationChain.model_dump()
+    # verification_chain is stored as dict (VerificationChain.model_dump()) for JSON
+    # serialization compatibility. Use get_verification_chain() for typed access.
+    # Phase 2 Track B: change to Optional[VerificationChain] when L3 split is done.
+    verification_chain: Optional[dict] = None
     suppressed: bool = False
     trace: dict = Field(default_factory=dict)
+
+    def get_verification_chain(self) -> Optional[VerificationChain]:
+        """Return verification_chain as a typed VerificationChain, or None."""
+        if self.verification_chain is None:
+            return None
+        return VerificationChain(**self.verification_chain)
 
 
 # ── Evidence Graph Snapshot (ADR-0009) ───────────────────────────────────
@@ -436,6 +460,8 @@ class WSMTransition(BaseModel):
     This Pydantic model is used for type safety at the Python layer.
     The DB schema is the authoritative definition.
     """
+    model_config = ConfigDict(frozen=True)
+
     transition_id: Optional[int] = None
     merchant_id: str
     module: str = ""
@@ -443,6 +469,9 @@ class WSMTransition(BaseModel):
     was_executed: bool = False
     reward_status: Literal["pending", "proxy", "final"] = "pending"
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
-    # TODO: Add baseline_snapshot, outcome_delta, verification_chain
+    # CLAUDE.md WSM Required Fields — present from Day 1
+    baseline_snapshot: Optional[dict] = None    # merchant metrics at decision time
+    outcome_delta: Optional[dict] = None        # {metric: {before, after}} post-outcome
+    verification_chain: Optional[dict] = None   # VerificationChain.model_dump() at write time
 
 

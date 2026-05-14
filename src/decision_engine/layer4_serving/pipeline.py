@@ -81,12 +81,23 @@ def run_once(
             signals = _load_signals(merchant_id)
 
         # ── Step 2: Compute MerchantStateVector via MSM ──────────────
+        # IMPORTANT: fetch previous state BEFORE compute() — MSM.compute()
+        # upserts the new state to DB, so any fetch after compute() returns
+        # the current (new) state, not the previous one. AlertEngine needs the
+        # true previous state to detect transitions (HEALTHY→DEGRADING, etc.).
+        prev_raw = db_client.fetch_latest_merchant_state(merchant_id)
+        previous_msm = _parse_msm(prev_raw) if prev_raw else None
+
         msm_state = _msm.compute(merchant_id, signals)
         log.info("[pipeline] MSM computed for %s", merchant_id)
 
+        # ── Feature snapshot (L5) — extract BEFORE Step 5 ────────────
+        # Must happen before candidate generation so anomaly detector
+        # receives HEALTHY-state baseline data, not just anomalous runs.
+        # Stored as a local variable; written to decision_log at Step 15b.
+        _feature_snapshot = _feature_builder.build(signals, msm_state)
+
         # ── Step 3: Run AlertEngine — log alerts, flag emergency ─────
-        prev_raw = db_client.fetch_latest_merchant_state(merchant_id)
-        previous_msm = _parse_msm(prev_raw) if prev_raw else None
         alerts = _alert_engine.check_and_alert(merchant_id, msm_state, previous_msm)
         emergency_triggered = _alert_engine.should_trigger_emergency_decision(
             msm_state, previous_msm,
@@ -164,7 +175,7 @@ def run_once(
         # ── Step 12: Assemble DecisionCards (top 3 only) ─────────────
         # Instantiate real DecisionCard objects — Pydantic validates every field.
         decision_cards: list[DecisionCard] = []
-        for action in eligible[:3]:
+        for i, action in enumerate(eligible[:3]):
             ie_raw = action.get("impact_estimate")
             if isinstance(ie_raw, dict):
                 ie_obj = ImpactEstimate(**ie_raw)
@@ -195,7 +206,7 @@ def run_once(
             ts = int(datetime.now(timezone.utc).timestamp())
 
             card = DecisionCard(
-                card_id=f"dc_{ts}_{merchant_id}_{module}",
+                card_id=f"dc_{ts}_{merchant_id}_{module}_{i}",
                 merchant_id=merchant_id,
                 module=module,
                 classification=classification,
@@ -224,20 +235,30 @@ def run_once(
             decision_cards.append(card)
 
         # ── Step 13: Render + 5-Gate for each DecisionCard ───────────
+        # decision_cards and eligible[:3] are built in the same loop order —
+        # zip them so we can access the evidence_snapshot alongside each card.
         response_cards: list[DecisionCard] = []
-        for card in decision_cards:
+        for card, action_dict in zip(decision_cards, eligible[:3]):
             vc = card.verification_chain
             all_passed = vc.all_passed if vc is not None else False
 
             if not all_passed:
                 continue  # DecisionVerifier failed → no LLM call
 
-            # 13a: LLMRenderer.render() — pass card as dict (renderer expects dict)
+            # 13a: Render — prefer evidence-grounded snapshot path [ADR-0009].
+            # render_from_snapshot() translates the L1→L3 causal chain; the
+            # renderer only references facts present in the trace (no hallucination).
+            # Falls back to render() when no snapshot (e.g. non-top-3 cards).
+            # card_dict is always built so the 5-Gate policy-echo check has access
+            # to module/action_id regardless of which render path was taken.
             card_dict = card.model_dump()
-            # Restore signals (not stored on DecisionCard, needed by LLMRenderer templates)
             card_dict["signals"] = signals
+            snapshot = action_dict.get("evidence_snapshot")
             try:
-                merchant_copy = _llm_renderer.render(card_dict)
+                if snapshot is not None:
+                    merchant_copy = _llm_renderer.render_from_snapshot(snapshot)
+                else:
+                    merchant_copy = _llm_renderer.render(card_dict)
             except ValueError:
                 log.warning(
                     "[pipeline] LLMRenderer rejected %s — skipping",
@@ -313,6 +334,25 @@ def run_once(
         # ── Step 15: WeeklyPlanner ────────────────────────────────────
         # WeeklyPlanner expects plain dicts — pass model_dump() representations
         weekly_plan = _weekly_planner.plan([c.model_dump() for c in response_cards])
+
+        # ── Step 15b: Decision Log (L5 Time-1 write) ─────────────────
+        # Non-fatal — log failure but never crash the pipeline over it.
+        # feature_snapshot was extracted before Step 5 so it is always
+        # populated regardless of whether candidates were generated.
+        try:
+            _write_decision_log_record(
+                merchant_id=merchant_id,
+                msm_state=msm_state,
+                feature_snapshot=_feature_snapshot,
+                ranked=ranked,
+                policy=policy,
+                policy_version=policy_version,
+            )
+        except Exception:
+            log.warning(
+                "[pipeline] decision_log write failed for %s — non-fatal",
+                merchant_id, exc_info=True,
+            )
 
         # ── Step 16: Return ───────────────────────────────────────────
         # Return DecisionCard objects — callers can call .model_dump() for serialization
@@ -439,10 +479,24 @@ def _generate_candidates(
 
         # Try PlaybookRegistry first; fallback to INDUSTRY_BENCHMARKS when
         # partner YAML content (expected_utility) is not yet defined.
-        playbook = _playbook_registry.match_playbook(module, {"msm_state": state.value})
+        playbook = _playbook_registry.match_playbook(module, {"msm_state": state.value}, merchant_id=merchant_id)
 
         module_benchmarks = benchmarks.get(module, {})
-        for action_id, bench in module_benchmarks.items():
+
+        # Determine action vocabulary. [ADR-0011]
+        # Meta-patterns are the authoritative source for action_ids — their
+        # actions[] list defines the candidate set for this pattern.
+        # Flat stub playbooks and no-playbook cases fall back to INDUSTRY_BENCHMARKS.
+        if playbook and playbook.get("_is_meta") and playbook.get("actions"):
+            action_ids = [a["id"] for a in playbook["actions"] if a.get("id")]
+            action_types = {a["id"]: a.get("type", "") for a in playbook["actions"] if a.get("id")}
+        else:
+            action_ids = list(module_benchmarks.keys())
+            action_types = {}
+
+        for action_id in action_ids:
+            # Fallback mid_val from INDUSTRY_BENCHMARKS (used when no KG prior).
+            bench = module_benchmarks.get(action_id, {})
             values = list(bench.values())
             mid_val = values[1] if len(values) > 1 else 0.0
 
@@ -463,16 +517,24 @@ def _generate_candidates(
                     "[pipeline] U_base from KG playbook %s action=%s utility=%.4f",
                     playbook["id"], action_id, kg_utility,
                 )
-            elif module == "retention":
-                # Fallback: INDUSTRY_BENCHMARKS
-                pred["retention_lift"] = mid_val
-                pred["gmv_lift"] = mid_val * 0.5
-            elif module == "acquisition":
-                pred["gmv_lift"] = mid_val
-            elif module == "conversion":
-                pred["gmv_lift"] = mid_val
-            elif module == "promotion":
-                pred["margin_lift"] = mid_val
+            else:
+                # Fallback: INDUSTRY_BENCHMARKS — no KG prior found.
+                # Item 4 fix: explicit warning so incomplete brand bindings are visible.
+                log.warning(
+                    "[pipeline] U_base fallback to INDUSTRY_BENCHMARKS for "
+                    "merchant=%s module=%s action=%s — no KG prior found. "
+                    "Check brand binding completeness before external user launch.",
+                    merchant_id, module, action_id,
+                )
+                if module == "retention":
+                    pred["retention_lift"] = mid_val
+                    pred["gmv_lift"] = mid_val * 0.5
+                elif module == "acquisition":
+                    pred["gmv_lift"] = mid_val
+                elif module == "conversion":
+                    pred["gmv_lift"] = mid_val
+                elif module == "promotion":
+                    pred["margin_lift"] = mid_val
 
             # Populate evidence_refs from brand binding template. [ADR-0011]
             # Renders ${metrics.*} placeholders with available signal values.
@@ -489,12 +551,24 @@ def _generate_candidates(
                                 lambda m: flat_signals.get(m.group(1), m.group(0)),
                                 tmpl,
                             )
+                            # Item 3 fix: warn when placeholder was not resolved.
+                            # Unresolved ${...} means the signal is missing from
+                            # the pipeline run — external users would see raw placeholders.
+                            if "${" in rendered:
+                                log.warning(
+                                    "[pipeline] evidence_refs placeholder unresolved: '%s' "
+                                    "(signal not in signals dict for merchant=%s action=%s). "
+                                    "Ensure L0 connector populates this signal before use.",
+                                    rendered, merchant_id, action_id,
+                                )
                             evidence_refs.append(rendered)
                         except Exception:
                             evidence_refs.append(tmpl)
 
             candidate: dict = {
                 "action_id": action_id,
+                "action_type": action_types.get(action_id, ""),  # e.g. DIAGNOSTIC / FLOW_CHANGE
+                "playbook_id": playbook["id"] if playbook else None,  # for decision_log pattern_matched
                 "module": module,
                 "msm_dimension": module,
                 "urgency_score": urgency,
@@ -557,9 +631,12 @@ def _build_evidence_snapshot(
     module = candidate.get("module", "unknown")
     dim_state = getattr(msm_state, f"{module}_state", "UNKNOWN")
     dim_urgency = getattr(msm_state, f"{module}_urgency", 0.0)
+    # Use integer percentage for urgency in the finding text so Gate 3 (no raw floats)
+    # passes when this finding is included in merchant-facing impact_narrative.
+    urgency_pct = int(round(dim_urgency * 100))
     entries.append(EvidenceTraceEntry(
         step="L1_State",
-        finding=f"{module.capitalize()} dimension is {dim_state} (urgency={dim_urgency:.2f})",
+        finding=f"{module.capitalize()} dimension is {dim_state} (urgency={urgency_pct}%)",
         source_data={
             "module": module,
             "state": dim_state,
@@ -646,6 +723,69 @@ def _build_evidence_snapshot(
         winner_action=action_id,
         evidence_trace=entries,
     )
+
+
+def _write_decision_log_record(
+    merchant_id: str,
+    msm_state: MerchantStateVector,
+    feature_snapshot,           # DecisionFeatureVector
+    ranked: list[dict],
+    policy: dict,
+    policy_version: str,
+) -> None:
+    """Write one L5 Decision Log record (Time-1 write).
+
+    Called once per pipeline run after Step 15 (WeeklyPlanner).
+    Simplified candidate summary — full candidate dicts contain nested
+    Pydantic objects that don't JSON-serialize directly.
+
+    Three ML consumers downstream:
+      - Anomaly Detector: feature_snapshot (needs HEALTHY runs too)
+      - XGBoost: candidates + user_response + outcome_delta pairing
+      - LinUCB: full context → action → reward triple
+    """
+    import uuid
+    from ..layer5_wsm.decision_log import DecisionLog, write_decision_log
+
+    candidates_summary = [
+        {
+            "action_id": a.get("action_id"),
+            "module": a.get("module"),
+            "playbook_id": a.get("playbook_id"),
+            "gmv_lift": a.get("pred", {}).get("gmv_lift"),
+            "final_score": a.get("final_score"),
+            "eligible": a.get("eligible", True),
+            "violations": a.get("violations", []),
+        }
+        for a in ranked
+    ]
+
+    top_action = ranked[0].get("action_id") if ranked else None
+    # pattern_matched: playbook_id of the top action (may be None in cold-start)
+    pattern_matched = ranked[0].get("playbook_id") if ranked else None
+
+    weights = policy.get("policy_weights", {})
+    scoring_snapshot = {
+        "beta1": policy.get("beta1", settings.beta1),
+        "beta2": policy.get("beta2", settings.beta2),
+        "beta3": policy.get("beta3", settings.beta3),
+        "policy_version": policy_version,
+        "u_base_weight": weights.get("gmv_lift", 0.4),
+    }
+
+    record = DecisionLog(
+        log_id=str(uuid.uuid4()),
+        merchant_id=merchant_id,
+        created_at=datetime.now(timezone.utc),
+        msm_state={d: getattr(msm_state, f"{d}_state") for d in _DIMENSIONS},
+        feature_snapshot=feature_snapshot.model_dump(),
+        pattern_matched=pattern_matched,
+        candidates=candidates_summary,
+        top_action=top_action,
+        scoring_snapshot=scoring_snapshot,
+    )
+    write_decision_log(record)
+    log.debug("[pipeline] decision_log written for %s log_id=%s", merchant_id, record.log_id)
 
 
 def _parse_msm(raw: dict) -> MerchantStateVector | None:

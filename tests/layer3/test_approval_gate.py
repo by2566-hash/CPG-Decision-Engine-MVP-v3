@@ -14,13 +14,14 @@ from fastapi.testclient import TestClient
 
 from api.app import app
 from src.decision_engine import db_client
+from src.decision_engine.config import settings
 from src.decision_engine.contracts import Counterfactual, ImpactEstimate
 from src.decision_engine.layer3_value.merchant_approval_gate import (
     ApprovalCheckResult,
     MerchantApprovalGate,
 )
 
-_client = TestClient(app)
+_client = TestClient(app, headers={"X-API-Key": settings.api_key})
 
 
 gate = MerchantApprovalGate()
@@ -161,4 +162,6 @@ class TestCheckApproval:
         data = resp.json()
         assert data["status"] == "pending_acknowledgment"
         assert data["risk_level"] == "HIGH"
-        assert "rollback_token_id" not in data
+        # rollback_token_id is in the response schema (Optional) but must be None
+        # for the pending_acknowledgment path — no rollback token is issued until approved
+        assert data.get("rollback_token_id") is None

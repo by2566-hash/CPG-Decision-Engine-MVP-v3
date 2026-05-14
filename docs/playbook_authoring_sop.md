@@ -266,24 +266,59 @@ outcome_value: >
 
 ---
 
-## Section 5: Threshold Key Namespace (v0.1 — will evolve)
+## Section 5: Threshold Key Namespace (v0.2 — will evolve)
 
 **Governance rule**: Before adding a new threshold key, check if an existing
 key can be reused. New keys require `introduced_at` annotation. Key renames
 must be propagated to all brand bindings that reference them.
 
-| Key | Description | Introduced at |
-|---|---|---|
-| `cac_spike_ratio` | CAC above baseline × multiplier → WATCH | wandering_bear v0.1 |
-| `cac_critical_ratio` | CAC above baseline × multiplier → DEGRADING | wandering_bear v0.1 |
-| `sub_rate_alert_pct` | Subscription rate WoW delta (negative) → WATCH trigger | wandering_bear v0.1 |
-| `sub_rate_critical_pct` | Subscription rate WoW delta (negative) → DEGRADING trigger | wandering_bear v0.1 |
-| `sku_concentration_threshold` | Top SKU order share fraction → mix check | wandering_bear v0.1 |
-| `channel_nonsubscribable_share` | Non-subscribable channel order share → denominator fix | wandering_bear v0.1 |
-| `brand_dr_split_threshold` | Brand spend fraction → require separate CPA view | wandering_bear v0.1 |
-| `destination_cvr_gap_threshold` | On-platform CVR / website CVR ratio → confirm routing | wandering_bear v0.1 |
-| `inventory_safety_days` | Inventory days below which spend is reduced | wandering_bear v0.1 |
-| `mix_diagnosis_min_delta_pp` | Adjusted vs reported rate delta (pp) to confirm mix | wandering_bear v0.1 |
+**Status column values:**
+- `active` — key is registered, can be used in active brand bindings
+- `dormant` — key is pre-registered for a Phase 2 deferred pattern; must NOT
+  be referenced in any active brand binding (emits WARNING if attempted)
+
+**Dormant key policy**: Dormant keys are pre-registered to prevent forgetting
+them at Phase 2 reactivation time. They exist in `_DORMANT_THRESHOLD_KEYS`
+in `playbook_registry.py` (separate from `_KNOWN_THRESHOLD_KEYS`). Any active
+brand binding that references a dormant key will emit a `[DORMANT]` WARNING at
+load time. This is a soft guard — the load succeeds — but the warning must be
+treated as a hard error before the brand binding ships.
+
+| Key | Description | Range | Introduced at | Status |
+|---|---|---|---|---|
+| `cac_spike_ratio` | CAC above 30d baseline × multiplier → acquisition WATCH | (1.0, ∞) | wandering_bear v0.1 | active |
+| `cac_critical_ratio` | CAC above 30d baseline × multiplier → acquisition DEGRADING | (1.0, ∞) | wandering_bear v0.1 | active |
+| `sub_rate_alert_pct` | Subscription rate WoW delta (negative, absolute pp) → conversion WATCH. Stored as absolute pp but derived from 15% relative drop per brand baseline (WB: -0.027). Phase 2: convert trigger to relative comparison. | (-1.0, 0.0) | wandering_bear v0.1; calibrated Shaungh 2026-04-16 | active |
+| `sub_rate_critical_pct` | Subscription rate WoW delta (negative) → conversion DEGRADING | (-1.0, 0.0) | wandering_bear v0.1 | active |
+| `sku_concentration_threshold` | Top SKU order share fraction → mix check gate. WB: 0.30 (calibrated Shaungh 2026-04-16, prev. 0.40). | (0.0, 1.0) | wandering_bear v0.1 | active |
+| `channel_nonsubscribable_share` | Non-subscribable channel order share → denominator fix | (0.0, 1.0) | wandering_bear v0.1 | active |
+| `brand_dr_split_threshold` | Brand spend fraction → require separate CPA view | (0.0, 1.0) | wandering_bear v0.1; demoted 2026-04-16 | **dormant** |
+| `destination_cpp_gap_threshold` | On-platform CPP / website CPP ratio → confirm destination routing problem. CPP preferred over CVR — factors in CPM/CPC differentials. Renamed from `destination_cvr_gap_threshold` 2026-04-16. | (1.0, ∞) | wandering_bear v0.1; calibrated Shaungh 2026-04-16 | active |
+| `inventory_safety_days` | Inventory days below which spend is reduced | (0, ∞) days | wandering_bear v0.1; demoted 2026-04-16 | **dormant** |
+| `mix_diagnosis_min_delta_pp` | Adjusted vs reported rate delta (pp) to confirm mix | (0.0, 100.0) pp | wandering_bear v0.1 | active |
+| `cpm_spike_ratio` | CPM above 30d baseline × multiplier → creative audit trigger | (1.0, ∞) | consumer_brand_a v0.1 | active |
+| `creative_ugc_share_floor` | Minimum UGC share of creative spend below which mix is unhealthy | (0.0, 1.0) | consumer_brand_a v0.1 | active |
+| `cvr_collapse_threshold` | CVR drop fraction vs baseline that confirms CRITICAL state | (0.0, 1.0) | consumer_brand_a v0.1 | active |
+| `recent_change_window_days` | Days look-back for site/flow/legal change detection | (0, ∞) days | consumer_brand_a v0.1 | active |
+| `cac_improvement_floor` | Retargeting CAC vs baseline below which LTV trap is suspected | (-1.0, 0.0) | cbb_001 (dormant) | **dormant** |
+| `offer_creative_share_threshold` | Share of offer-led creative within retargeting spend | (0.0, 1.0) | cbb_001 (dormant) | **dormant** |
+
+**Note — registered-but-unexercised active key (as of 2026-04-16):**
+One key remains `active` but is not yet referenced by any active brand binding:
+
+- `channel_nonsubscribable_share` — the `conversion_subscription_mix` meta-pattern
+  analysis_path step `exclude_nonsubscribable_channel` semantically requires this concept.
+  Kept `active`: the next brand onboarding that has non-subscribable channels must supply
+  a value at binding time.
+
+`brand_dr_split_threshold` and `inventory_safety_days` were demoted to `_DORMANT_THRESHOLD_KEYS`
+on 2026-04-16 — no active meta-pattern or brand binding references them.
+No active pattern currently reads or evaluates them.
+
+Future cleanup: either wire these keys into active meta-patterns and brand
+bindings (and update this table's `introduced_at` entry), or explicitly
+reclassify them as `dormant` (move to `_DORMANT_THRESHOLD_KEYS`) or retire
+them in a later sprint. Do not leave them in this unexercised state indefinitely.
 
 ---
 
@@ -338,6 +373,14 @@ outcome_calibrated
 (cross_brand_inferred)    ← field reserved, not active
 ```
 
+The `outcome_calibrated` value is currently validated as a schema enum
+field at brand binding load time. Automatic promotion from `partner_prior`
+to `outcome_calibrated` based on accumulated outcome counts is Phase 2
+work, dependent on `RewardBackfill` (currently stubbed at
+`src/decision_engine/layer5_wsm/reward_backfill.py`). As of 2026-04-14,
+no priors are auto-promoted by runtime code; all `outcome_calibrated`
+labels (if any exist) have been manually set.
+
 `shadow_data_collected` is a data completeness marker only:
 - Meaning: shadow mode has run N times and the trigger has fired
 - NOT meaning: the threshold is correctly calibrated
@@ -380,6 +423,92 @@ Do not reuse numbers. Deleted use cases leave a gap (no renumbering).
 
 ---
 
+---
+
+## Section 10: Proxy Trigger Discipline
+
+When a meta-pattern's MSM trigger state is computed from **proxy signals**
+(e.g., mobile ATC gap as proxy for site-wide friction), the `analysis_path`
+MUST begin with a step that establishes ground truth **before** any
+user-segment, device-segment, or channel-segment analysis.
+
+### The Failure Mode This Prevents
+
+```
+Trigger fires correctly (proxy signal is true)
+  → BUT root cause is in a different layer (compliance change, deploy, config)
+  → AND analysis_path leads merchant to the wrong remediation
+  → RESULT: merchant audits mobile UX instead of reverting compliance popup
+```
+
+This failure mode is silent: the trigger fired correctly, the action was
+taken, but the action was wrong because the analysis path was wrong.
+
+### Identification Rule
+
+A meta-pattern uses a proxy trigger when its MSM CRITICAL or DEGRADING formula
+contains **AND-clauses with mixed signal types** — e.g., a UX metric AND a
+trend metric, where either alone might have a different root cause than both
+together.
+
+Examples of proxy trigger situations:
+- `mobile_below_degrading AND cvr_trending_down → CRITICAL`
+  (proxy for: site-wide friction affecting all users, not just mobile)
+- `incrementality < threshold AND margin_delta < 0 → CRITICAL`
+  (proxy for: promotional structure is broken, not just one campaign)
+
+### Required First Step
+
+For any meta-pattern with a proxy trigger, `analysis_path[0]` MUST be a
+ground-truth establishment step:
+
+```yaml
+analysis_path:
+  - step: {ground_truth_step_slug}        # e.g. timeline_correlation
+    description: "..."
+    must_run_first: true
+    rationale: >
+      MSM {STATE} trigger uses {proxy_signal} as proxy for {true_phenomenon}.
+      Root cause analysis must NOT start with {proxy_dimension} analysis.
+      {What_is_the_correct_first_check} is the only valid first step before
+      any segment-level analysis.
+```
+
+The `must_run_first: true` field is read by the LLM renderer to ensure
+the generated DecisionCard narrative places this step first and explains why.
+
+### Valid Ground-Truth First Steps
+
+| Situation | Valid First Step |
+|-----------|----------------|
+| Site-wide friction (all traffic affected) | Timeline correlation against recent deploys / config / legal changes |
+| Cross-source drop (paid AND organic both affected) | Cross-source comparison (not a media problem) |
+| Sudden metric collapse (overnight) | Server log / error rate inspection |
+| Conversion drop with recent flow change | Incognito simulation of full conversion path |
+
+### Hard Requirement
+
+This discipline is a **HARD REQUIREMENT** for any meta-pattern that meets both:
+1. Uses an MSM CRITICAL trigger
+2. That CRITICAL formula contains AND-clauses with mixed signal types
+
+Schema-level enforcement (auto-checking that proxy triggers have a
+`must_run_first: true` step) is Phase 2 work. For Phase 1, this is an
+authoring discipline enforced by this SOP and documented in ADR-0012.
+
+**Violation at authoring time** = incorrect DecisionCard recommendation reaching
+merchant. Treat this as a data quality defect, not a minor deviation.
+
+### Reference Case
+
+cba_002 (Consumer Brand A — Compliance UX): MSM CRITICAL fires via
+`mobile_below_degrading AND cvr_trending_down`. Root cause was a legal
+compliance popup applied to all users. First `analysis_path` step is
+`timeline_correlation`, not mobile UX audit. See:
+`playbooks/meta/conversion_compliance_friction.yaml`
+
+---
+
 ## Maintenance
 
 This document is operational guidance, not architecture. Updates do not require
@@ -387,5 +516,6 @@ an ADR. Update when:
 - A new threshold key is added to Section 5 (update table + `introduced_at`)
 - A new `gmv_lift_derivation` method is documented in Section 6
 - The partner delivery format changes
+- A new proxy trigger pattern is identified (add to Section 10 reference cases)
 
-Last updated: 2026-04-12
+Last updated: 2026-04-13

@@ -1,0 +1,103 @@
+# ── Use Case SSoT: cba_001 — UGC Creator Program (acquisition_ugc_creative) ───
+# Layer 3 evidence record [ADR-0011]
+# RULE: This is the Single Source of Truth for all cba_001 observed data.
+#       Brand binding (playbooks/brands/consumer_brand_a/acquisition_ugc_creative.yaml)
+#       references evidence_case: "cba_001" and contains only lean priors.
+#       Derivation comments in brand binding must NOT duplicate data here.
+# ─────────────────────────────────────────────────────────────────────────────
+
+use_case_id: cba_001
+brand: consumer_brand_a
+meta_pattern_ref: acquisition_ugc_creative
+module: acquisition
+observed_at: "Phase 1 intake — timeframe to be confirmed by partner"
+evidence_quality: high             # specific before/after CAC and CPM numbers confirmed by partner
+
+calibration_value_for:
+  - action_id: AUDIT_CREATIVE_MIX
+    gmv_lift_derivation:
+      method: diagnostic_prevention_value
+      prevented_action: "channel pause or bid reduction when creative composition is the actual driver"
+      prevented_action_cost_est: "1-2 weeks of reduced reach + retargeting decay"
+      rationale: >
+        Auditing creative format distribution before adjusting media is a low-cost
+        diagnostic that prevents misattributing CAC rise to media efficiency.
+        Correct diagnosis enables creative rotation rather than channel pause,
+        preserving reach while recovering CAC.
+      gmv_lift_estimate: 0.04
+
+  - action_id: SCALE_TOP_CREATIVE
+    gmv_lift_derivation:
+      method: cac_improvement_to_gmv_lift
+      cac_before: 210.00
+      cac_after: 149.00
+      cac_improvement_pct: 0.290        # (210 - 149) / 210
+      ugc_only_cac: 141.00
+      non_ugc_cac_same_period: 200.00
+      ugc_vs_non_ugc_improvement_pct: 0.295  # (200 - 141) / 200
+      cpm_before: 25.00
+      cpm_after: 11.00
+      cpm_improvement_pct: 0.56         # (25 - 11) / 25
+      weekly_ugc_spend: 58000
+      monthly_new_customers_est: 1642   # $58K weekly / $141 UGC CAC × 4 weeks (approx)
+      aov_est: 50.0
+      aov_est_source: "estimated — not provided by partner"
+      monthly_gmv_est: 1000000
+      monthly_gmv_est_source: "estimated from $320K monthly ad spend × ~3× ROAS"
+      gmv_lift_estimate: 0.08
+      estimated: true
+      derivation_note: >
+        0.29 × (1642 × 50 / 1,000,000) ≈ 0.024 pure CAC basis.
+        Rounded up to 0.08 to account for CPM efficiency (more impressions per
+        dollar beyond CAC improvement alone). All fields marked estimated are
+        pending partner confirmation.
+
+data_observed:
+  period: "Phase 1 intake — timeframe to be confirmed by partner"
+
+  ugc_program:
+    creator_applications: 1000
+    creators_selected: 25
+    cost_per_piece_range: [250, 500]
+    total_investment: 10000
+
+  before_ugc_program:
+    meta_cac: 210.00
+    meta_cpm: 25.00
+    creative_mix:
+      brand_produced_share: 1.00
+      ugc_share: 0.00
+
+  after_ugc_program:
+    meta_cac_blended: 149.00
+    meta_cpm_blended: 11.00
+    weekly_ugc_spend: 58000
+    ugc_cac: 141.00
+    non_ugc_cac_same_period: 200.00
+
+action_taken: SCALE_TOP_CREATIVE   # introduced structured UGC creator program on Meta
+root_cause_confirmed: creative_composition
+
+counterfactual: >
+  Without the creative composition audit, the team might have interpreted rising
+  CAC and CPMs as media inefficiency (bid strategy, audience saturation, or channel
+  fatigue) and taken one of: reducing Meta budget, pausing campaigns for creative
+  refresh, shifting spend to other channels. None of these address the actual
+  variable (creative format mix). CAC would have remained elevated while the team
+  pursued wrong remediations, burning budget in other channels that also lack
+  creator-format diversification.
+
+outcome_value: >
+  Root cause identified as creative format composition (100% brand-produced before
+  the UGC program). After introducing UGC with $10K upfront investment in creator
+  fees, Meta CAC dropped from $210 to $149 blended (-29%) and CPMs from $25 to $11
+  (-56%). UGC-only CAC ($141) materially outperformed non-UGC ($200) during the
+  same period, confirming format composition as the dominant lever. Pattern
+  established: audit creative format distribution BEFORE adjusting media variables
+  when CAC and CPM rise together with stable structural variables.
+
+partner_clarifications_needed:
+  - "Exact timeframe of the UGC program launch and baseline period"
+  - "Monthly GMV during the observation period (currently estimated at $1M)"
+  - "Average order value during the observation period (currently estimated at $50)"
+  - "Total monthly ad spend across all channels (not just Meta)"

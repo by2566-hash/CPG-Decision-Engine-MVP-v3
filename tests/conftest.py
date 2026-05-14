@@ -6,8 +6,15 @@ Includes all V2 tables (backward compatibility) plus V3 extensions:
 """
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
+
+# Must be set BEFORE any decision_engine import — config.py validators run
+# at module load time and reject placeholder credentials unless this flag is set.
+os.environ.setdefault("ALLOW_PLACEHOLDER_SECRETS", "1")
+
+import sqlite3
 
 import pytest
 import sqlalchemy as sa
@@ -18,6 +25,17 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from src.decision_engine import db_client
+
+# Register datetime adapters for SQLite to silence DeprecationWarning in Python 3.12+.
+# The default adapters/converters are deprecated; explicit registration required.
+# We register for both "DATETIME" and "TIMESTAMP" (both appear in the V3 DDL).
+# fromisoformat() handles both 'T' and space separators.
+# See: https://docs.python.org/3/library/sqlite3.html#sqlite3-adapter-converter-recipes
+from datetime import datetime as _dt
+
+sqlite3.register_adapter(_dt, lambda val: val.isoformat())
+sqlite3.register_converter("DATETIME", lambda val: _dt.fromisoformat(val.decode()))
+sqlite3.register_converter("TIMESTAMP", lambda val: _dt.fromisoformat(val.decode()))
 
 
 # ── SQL DDL (SQLite-compatible) ─────────────────────────────────────
@@ -69,11 +87,12 @@ CREATE TABLE IF NOT EXISTS event_dedup (
 );
 
 CREATE TABLE IF NOT EXISTS planner_policy_pack (
-    policy_version VARCHAR(64) PRIMARY KEY,
     merchant_id VARCHAR(64) NOT NULL,
+    policy_version VARCHAR(64) NOT NULL,
     payload_json TEXT NOT NULL,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    expires_at TIMESTAMP
+    expires_at TIMESTAMP,
+    PRIMARY KEY (merchant_id, policy_version)
 );
 
 CREATE TABLE IF NOT EXISTS serving_rank_cache (
@@ -125,7 +144,10 @@ def db_engine():
 
     engine = sa.create_engine(
         "sqlite:///:memory:",
-        connect_args={"check_same_thread": False},
+        connect_args={
+            "check_same_thread": False,
+            "detect_types": sqlite3.PARSE_DECLTYPES,
+        },
         poolclass=StaticPool,
     )
     with engine.connect() as conn:

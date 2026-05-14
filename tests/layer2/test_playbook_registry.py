@@ -220,3 +220,249 @@ class TestExistingPlaybooksAreValid:
             assert critical == [], (
                 f"Playbook '{pb_id}' ({pb.get('_source_file')}) has critical issues: {critical}"
             )
+
+    def test_default_registry_loads_at_least_one_playbook(self):
+        """Regression: default PlaybookRegistry() must find V3/playbooks/ correctly.
+
+        If _DEFAULT_PLAYBOOK_DIR is wrong (wrong parents[] depth, missing directory,
+        etc.), the registry silently loads 0 playbooks and the pipeline falls through
+        entirely to INDUSTRY_BENCHMARKS — brand bindings and meta-patterns are ignored.
+        This test locks that path so it fails loudly instead of silently degrading.
+        """
+        registry = PlaybookRegistry()
+        registry._ensure_loaded()
+        assert len(registry._by_id) >= 1, (
+            f"Default PlaybookRegistry() loaded 0 playbooks. "
+            f"Check _DEFAULT_PLAYBOOK_DIR in playbook_registry.py. "
+            f"Resolved dir: {registry._playbook_dir}"
+        )
+
+    def test_default_registry_loads_meta_patterns(self):
+        """Regression: default registry must include ADR-0011 meta-patterns from playbooks/meta/.
+
+        Meta-patterns are the authoritative action vocabulary for KG-driven candidate
+        generation. If meta/ is not scanned, brand binding priors never enter scoring.
+        """
+        registry = PlaybookRegistry()
+        registry._ensure_loaded()
+        meta_ids = [pb_id for pb_id, pb in registry._by_id.items() if pb.get("_is_meta")]
+        assert len(meta_ids) >= 1, (
+            f"Default PlaybookRegistry() loaded no meta-patterns (playbooks/meta/). "
+            f"Loaded playbook IDs: {list(registry._by_id.keys())}"
+        )
+
+
+# ── ADR-0012 router tests: match_playbook() merchant_id selection ─────────────
+# These 5 tests lock the dict | None return contract and the brand-binding-aware
+# selection logic introduced in ADR-0012 (2026-04-13).
+#
+# Setup pattern used across all 5:
+#   - Build a synthetic registry with 2 meta-patterns in the same module/MSM-state
+#   - Inject a fake brand binding cache so get_brand_binding() returns a hit
+#     for merchant "test_merchant" on "meta_b" only
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _build_two_meta_registry() -> PlaybookRegistry:
+    """Return a registry with two meta-patterns in acquisition / DEGRADING."""
+    registry = PlaybookRegistry.__new__(PlaybookRegistry)
+    registry._playbook_dir = ""
+    registry._loaded = True
+    registry._brand_bindings = {}
+
+    meta_a = {
+        "id": "acq_meta_a",
+        "module": "acquisition",
+        "description": "alpha pattern",
+        "actions": [{"id": "PAUSE_LOW_ROAS"}],
+        "triggers": [{"msm_state": "DEGRADING"}],
+        "patterns": [],
+        "constraints": [],
+        "_source_file": "meta_a.yaml",
+        "_is_meta": True,
+    }
+    meta_b = {
+        "id": "acq_meta_b",
+        "module": "acquisition",
+        "description": "beta pattern",
+        "actions": [{"id": "SHIFT_BUDGET_TO_RETENTION"}],
+        "triggers": [{"msm_state": "DEGRADING"}],
+        "patterns": [],
+        "constraints": [],
+        "_source_file": "meta_b.yaml",
+        "_is_meta": True,
+    }
+    # Load order: a first, b second
+    registry._by_module = {"acquisition": [meta_a, meta_b]}
+    registry._by_id = {"acq_meta_a": meta_a, "acq_meta_b": meta_b}
+    return registry
+
+
+# ── Deferred directory loader test ───────────────────────────────────────────
+
+class TestDeferredDirectorySkipped:
+    """ADR-0012 + loader contract: _deferred/ contents must never appear in registry."""
+
+    def test_loader_skips_deferred_directory(self, tmp_path):
+        """PlaybookRegistry must not load any YAML from meta/_deferred/.
+
+        Enforces: ADR-0012 — dormant patterns in _deferred/ have unresolvable
+        trigger conditions (missing DFV fields, Phase 2 dependencies). Loading
+        them would register non-activatable triggers as live candidates, causing
+        the pipeline to generate candidates that cannot be scored correctly.
+
+        If this test fails:
+        - The _deferred/ skip logic in load_playbooks() was removed or broken.
+          Restore the 'startswith("_")' part filter in load_playbooks().
+        - A YAML was moved out of _deferred/ without going through the full
+          reactivation checklist (see docs/partner_clarification_queue/).
+        """
+        import textwrap
+
+        # Build a synthetic playbook directory with meta/ and meta/_deferred/
+        meta_dir = tmp_path / "meta"
+        meta_dir.mkdir()
+        deferred_dir = meta_dir / "_deferred"
+        deferred_dir.mkdir()
+
+        # Active meta-pattern — must be loaded
+        (meta_dir / "active_pattern.yaml").write_text(textwrap.dedent("""
+            meta_pattern:
+              id: active_meta_v1
+              module: retention
+            triggers:
+              - msm_state: DEGRADING
+            actions:
+              - id: SEND_REMINDER
+        """))
+
+        # Dormant pattern in _deferred/ — must NOT be loaded
+        (deferred_dir / "dormant_pattern.yaml").write_text(textwrap.dedent("""
+            activation_phase: 2
+            meta_pattern:
+              id: dormant_meta_v1
+              module: acquisition
+            triggers:
+              - msm_state: WATCH
+            actions:
+              - id: VALIDATE_BEFORE_SCALE
+        """))
+
+        registry = PlaybookRegistry(playbook_dir=str(tmp_path))
+        registry.load_playbooks(str(tmp_path))
+
+        assert "active_meta_v1" in registry._by_id, (
+            "Active meta-pattern 'active_meta_v1' should be loaded but was not. "
+            "Check that meta/ scanning still works correctly."
+        )
+        assert "dormant_meta_v1" not in registry._by_id, (
+            "Dormant pattern 'dormant_meta_v1' from meta/_deferred/ must NOT be loaded. "
+            "Restore the _deferred/ skip logic in load_playbooks(). See ADR-0012."
+        )
+
+    def test_real_deferred_dir_not_in_default_registry(self):
+        """acquisition_ltv_quality_trap must not appear in default registry.
+
+        Regression guard: confirms the real playbooks/meta/_deferred/ directory
+        is excluded when PlaybookRegistry() is instantiated with default paths.
+
+        If this test fails: cbb_001 dormant YAML leaked into active registry.
+        Likely cause: _deferred/ skip logic broken or YAML moved to meta/ root.
+        """
+        registry = PlaybookRegistry()
+        registry._ensure_loaded()
+        assert "acquisition_ltv_quality_trap" not in registry._by_id, (
+            "acquisition_ltv_quality_trap (cbb_001 dormant) must not appear in "
+            "the active registry. It is in playbooks/meta/_deferred/ and must "
+            "remain excluded until Phase 2 reactivation. See ADR-0012 and "
+            "docs/partner_clarification_queue/cbb_001_deferred_reactivation.md"
+        )
+
+
+class TestMatchPlaybookMerchantIdRouting:
+    """ADR-0012: match_playbook() merchant_id routing contract."""
+
+    def test_returns_dict_or_none_not_list(self):
+        """Return type is dict | None. Never list. [ADR-0012 contract]"""
+        registry = _build_two_meta_registry()
+        result = registry.match_playbook("acquisition", {"msm_state": "DEGRADING"})
+        assert result is None or isinstance(result, dict), (
+            f"match_playbook() must return dict or None, got {type(result)!r}. "
+            "Changing to list requires ADR-0012 supersession."
+        )
+
+    def test_brand_bound_meta_preferred_over_unbound(self):
+        """When merchant_id is given and one meta-pattern has a brand binding,
+        the bound pattern is returned even if an unbound one was loaded first.
+        [ADR-0012 Priority 1]
+        """
+        registry = _build_two_meta_registry()
+        # Inject binding for "acq_meta_b" only — loaded second
+        registry._brand_bindings["brand_x"] = {
+            "acq_meta_b": {"brand": "brand_x", "meta_pattern_ref": "acq_meta_b"}
+        }
+        result = registry.match_playbook(
+            "acquisition", {"msm_state": "DEGRADING"}, merchant_id="brand_x"
+        )
+        assert result is not None
+        assert result["id"] == "acq_meta_b", (
+            "Brand-bound meta-pattern 'acq_meta_b' must win over unbound 'acq_meta_a'. "
+            "See ADR-0012 Priority 1."
+        )
+
+    def test_brand_bound_alphabetical_tiebreak(self):
+        """When two meta-patterns both have brand bindings, alphabetically first wins.
+        [ADR-0012 deterministic tiebreak]
+        """
+        registry = _build_two_meta_registry()
+        # Both patterns bound to the same merchant
+        registry._brand_bindings["brand_y"] = {
+            "acq_meta_a": {"brand": "brand_y", "meta_pattern_ref": "acq_meta_a"},
+            "acq_meta_b": {"brand": "brand_y", "meta_pattern_ref": "acq_meta_b"},
+        }
+        result = registry.match_playbook(
+            "acquisition", {"msm_state": "DEGRADING"}, merchant_id="brand_y"
+        )
+        assert result is not None
+        assert result["id"] == "acq_meta_a", (
+            "With two brand-bound patterns, 'acq_meta_a' < 'acq_meta_b' alphabetically, "
+            "so 'acq_meta_a' must win. See ADR-0012 tiebreak rule."
+        )
+
+    def test_no_brand_binding_falls_back_to_first_meta_in_load_order(self):
+        """When merchant_id is given but no brand binding exists, falls back to
+        first MSM-state-matching meta-pattern in load order. [ADR-0012 Priority 2]
+        """
+        registry = _build_two_meta_registry()
+        # No binding for this merchant
+        registry._brand_bindings["unknown_merchant"] = {}
+        result = registry.match_playbook(
+            "acquisition", {"msm_state": "DEGRADING"}, merchant_id="unknown_merchant"
+        )
+        assert result is not None
+        assert result["id"] == "acq_meta_a", (
+            "With no brand binding, first meta-pattern in load order ('acq_meta_a') "
+            "must be returned. See ADR-0012 Priority 2."
+        )
+
+    def test_empty_merchant_id_behaves_same_as_omitted(self):
+        """merchant_id='' (default) skips brand-binding lookup — backward compatible.
+        [ADR-0012: no change to callers that don't pass merchant_id]
+        """
+        registry = _build_two_meta_registry()
+        # Binding exists but should NOT be consulted when merchant_id is empty
+        registry._brand_bindings["brand_z"] = {
+            "acq_meta_b": {"brand": "brand_z", "meta_pattern_ref": "acq_meta_b"}
+        }
+        result_explicit_empty = registry.match_playbook(
+            "acquisition", {"msm_state": "DEGRADING"}, merchant_id=""
+        )
+        result_omitted = registry.match_playbook(
+            "acquisition", {"msm_state": "DEGRADING"}
+        )
+        assert result_explicit_empty == result_omitted, (
+            "merchant_id='' must produce the same result as omitting merchant_id. "
+            "Backward compatibility required. See ADR-0012."
+        )
+        # Both should return first meta in load order (no brand binding consulted)
+        assert result_omitted is not None
+        assert result_omitted["id"] == "acq_meta_a"

@@ -39,9 +39,18 @@ _TEMPLATES: dict[str, dict[str, dict[str, str]]] = {
             "diagnosis": "CAC increased {cac_increase_pct:.0%} above 30-day baseline with declining ROAS",
             "recommendation": "Reallocate ad budget from underperforming channels to top converters",
         },
-        "PAUSE_CHANNEL": {
-            "diagnosis": "CAC increased {cac_increase_pct:.0%} above 30-day baseline",
-            "recommendation": "Pause underperforming channel to reduce spend waste",
+        "FIX_DESTINATION_ROUTING": {
+            "diagnosis": "CAC increased {cac_increase_pct:.0%} above 30-day baseline — on-platform destination (IG/FB Shop) is routing traffic away from website conversion path",
+            "recommendation": "Disable on-platform destination setting and route all traffic to website. Do not pause the Meta channel — only the destination needs to change.",
+        },
+        # UGC creative mix actions (acquisition_ugc_creative pattern — cba_001)
+        "AUDIT_CREATIVE_MIX": {
+            "diagnosis": "CAC increased {cac_increase_pct:.0%} and CPM rose {cpm_increase_pct:.0%} above baseline with no change in spend, audience, or campaign structure — creative composition is the primary suspect",
+            "recommendation": "Audit active creative by content type (UGC vs brand-produced vs offer-led). Confirm format distribution. Do not adjust bids or audiences until creative composition is confirmed as the driver.",
+        },
+        "SCALE_TOP_CREATIVE": {
+            "diagnosis": "Creative audit confirmed UGC format outperforming brand-produced at {ugc_cac_delta:.0%} lower CAC",
+            "recommendation": "Scale spend behind top-performing UGC creative types. Shift budget from underperforming formats within the same channel.",
         },
     },
     "conversion": {
@@ -60,6 +69,17 @@ _TEMPLATES: dict[str, dict[str, dict[str, str]]] = {
         "FIX_DENOMINATOR": {
             "diagnosis": "Subscription rate may be depressed by structurally non-subscribable channel orders in denominator",
             "recommendation": "Recalculate subscription rate excluding non-subscribable channels; reallocate budget if adjusted rate normalizes",
+        },
+        # Compliance friction diagnostics (conversion_compliance_friction pattern — cba_002)
+        # SOP Section 10 (Proxy Trigger Discipline): recommendation MUST mention
+        # timeline / recent changes BEFORE any user-segment or device-segment language.
+        "AUDIT_RECENT_CHANGES": {
+            "diagnosis": "CVR collapse may be caused by a recent site, flow, or legal/compliance change rather than traffic quality or channel quality",
+            "recommendation": "First: audit the timeline of recent site, flow, and legal/compliance deploys against the CVR drop onset. Simulate the conversion path as a new visitor (incognito). Identify any friction points introduced recently. Confirm the root cause before triggering remediation.",
+        },
+        "REMOVE_COMPLIANCE_FRICTION": {
+            "diagnosis": "CVR dropped suddenly across paid and organic with no change in traffic quality — timeline correlation indicates a recent site, flow, or compliance change is the primary suspect, not media or audience performance",
+            "recommendation": "First: map CVR drop against timeline of recent site changes, legal/compliance deploys, and flow modifications. Simulate the full conversion path as a new visitor (incognito). Identify all friction points introduced recently. Then remove or redesign compliance-required friction and provide alternative paths for users who exit the primary flow.",
         },
     },
     "promotion": {
@@ -87,6 +107,16 @@ class LLMRenderer:
     ONLY runs after DecisionVerifier.all_passed = True.
     NEVER makes decisions — only renders verified decisions into merchant language.
     """
+
+    def __init__(self) -> None:
+        from ...config import settings
+        if settings.llm_provider != "template" and not settings.llm_api_key:
+            log.warning(
+                "[LLMRenderer] llm_provider=%r but llm_api_key is empty — "
+                "LLM rendering will fail at Phase 2 activation. "
+                "Set LLM_API_KEY env var before switching from 'template'.",
+                settings.llm_provider,
+            )
 
     def render(self, verified_decision: dict) -> dict:
         """Render a verified decision into merchant-facing copy.
@@ -157,6 +187,14 @@ class LLMRenderer:
 
         ctx["promo_incrementality"] = signals.get("promo_incrementality", 0.0)
         ctx["promo_margin_delta"] = signals.get("promo_margin_delta", 0.0)
+
+        # cba_001 (acquisition_ugc_creative) context fields
+        cpm_7d = signals.get("cpm_7d", 0)
+        cpm_baseline = signals.get("cpm_baseline_30d", 1)
+        ctx["cpm_increase_pct"] = (
+            (cpm_7d - cpm_baseline) / cpm_baseline if cpm_baseline > 0 else 0.0
+        )
+        ctx["ugc_cac_delta"] = signals.get("ugc_cac_delta", 0.0)
 
         return ctx
 
@@ -240,33 +278,64 @@ class LLMRenderer:
         return self._format_snapshot(snapshot)
 
     def _format_snapshot(self, snapshot: "EvidenceGraphSnapshot") -> dict:
-        """Phase 1 deterministic renderer for EvidenceGraphSnapshot."""
-        # Build diagnosis from L1_State entry
+        """Phase 1 deterministic renderer for EvidenceGraphSnapshot.
+
+        Produces two distinct narratives:
+          impact_narrative    — merchant-facing copy, no raw floats (Gate 3 compliant)
+          evidence_narrative  — technical trace for debugging / L5 logging
+        """
         diagnosis = ""
         recommendation = f"Action: {snapshot.winner_action}"
         scoring_summary = ""
+        kg_finding = ""
+        constraint_finding = ""
 
         for entry in snapshot.evidence_trace:
             if entry.step == "L1_State":
                 diagnosis = entry.finding
+            elif entry.step == "L2_KG":
+                kg_finding = entry.finding
             elif entry.step == "L3_Scoring":
                 scoring_summary = entry.finding
             elif entry.step == "L3_Constraint" and entry.source_data.get("eligible"):
+                constraint_finding = entry.finding
                 recommendation = (
                     f"Action: {snapshot.winner_action} — "
                     f"{entry.finding.lower()}"
                 )
 
-        narrative_parts = [
+        # impact_narrative: merchant-facing summary — no raw floats (Gate 3 compliant).
+        # Describes the situation and action in qualitative terms only.
+        impact_parts = []
+        if diagnosis:
+            impact_parts.append(diagnosis)
+        if kg_finding:
+            impact_parts.append(kg_finding)
+        if constraint_finding:
+            impact_parts.append(constraint_finding)
+        if not impact_parts:
+            impact_parts.append(f"Decision basis available for {snapshot.winner_action}")
+        impact_narrative = " | ".join(impact_parts)
+
+        # evidence_narrative: full technical trace for L5 logging / offline analysis.
+        # Contains raw numerics — not passed through Gate 3.
+        evidence_parts = [
             f"[{entry.step}] {entry.finding}"
             for entry in snapshot.evidence_trace
         ]
-        narrative = " | ".join(narrative_parts)
+        evidence_narrative = " | ".join(evidence_parts)
 
+        # confidence_statement and impact_narrative are 5-Gate Gate-1 required fields.
+        confidence_stmt = (
+            f"Evidence grounded from {len(snapshot.evidence_trace)}-step causal trace "
+            f"(L1→L2→L3). Confidence: based on partner calibration prior."
+        )
         return {
             "diagnosis": diagnosis or f"Decision trace for {snapshot.winner_action}",
             "recommendation": recommendation,
-            "evidence_narrative": narrative,
+            "impact_narrative": impact_narrative,    # 5-Gate required, no raw floats
+            "confidence_statement": confidence_stmt, # 5-Gate required
+            "evidence_narrative": evidence_narrative, # technical trace for L5 logging
             "scoring_summary": scoring_summary,
             "snapshot_candidate_id": snapshot.candidate_id,
         }

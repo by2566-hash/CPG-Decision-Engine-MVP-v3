@@ -84,7 +84,13 @@ class WeeklyPlanner:
         return getattr(ie, "expected", 0.0)
 
     def _detect_conflicts(self, top_actions: list[dict]) -> tuple[bool, str | None]:
-        """Flag if two top actions target the same product or segment."""
+        """Flag if two top actions target the same product or segment.
+
+        NOTE (Phase 1): 'target_product' and 'target_segment' are not populated
+        by the current pipeline candidate generation — this method always returns
+        (False, None). Conflict detection will become active when candidate field
+        expansion is implemented in Phase 2 (see FIX-17 / S-NEW-4).
+        """
         seen_targets: dict[str, str] = {}
 
         for card in top_actions:

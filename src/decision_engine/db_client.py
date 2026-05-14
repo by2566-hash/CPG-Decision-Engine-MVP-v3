@@ -358,7 +358,7 @@ def fetch_wsm_for_billing(
                 SELECT transition_id, merchant_id, decision_ts,
                        action_id, action_family, outcome_delta,
                        impact_estimate, planner_policy_version,
-                       was_executed, executed_at
+                       was_executed, executed_at, execution_params
                 FROM wsm_transitions_v3
                 WHERE merchant_id = :mid
                   AND was_executed = TRUE
@@ -372,7 +372,7 @@ def fetch_wsm_for_billing(
         result = []
         for r in rows.fetchall():
             d = dict(r._mapping)
-            for json_col in ("outcome_delta", "impact_estimate"):
+            for json_col in ("outcome_delta", "impact_estimate", "execution_params"):
                 if isinstance(d.get(json_col), str):
                     d[json_col] = json.loads(d[json_col])
             result.append(d)
@@ -457,9 +457,9 @@ def upsert_policy_pack(
     with _conn() as c:
         c.execute(
             text("""
-                INSERT INTO planner_policy_pack (policy_version, merchant_id, payload_json, expires_at)
-                VALUES (:pv, :mid, :pj, :ea)
-                ON CONFLICT (policy_version) DO UPDATE
+                INSERT INTO planner_policy_pack (merchant_id, policy_version, payload_json, expires_at)
+                VALUES (:mid, :pv, :pj, :ea)
+                ON CONFLICT (merchant_id, policy_version) DO UPDATE
                     SET payload_json = EXCLUDED.payload_json,
                         expires_at   = EXCLUDED.expires_at
             """),
@@ -608,14 +608,16 @@ def fetch_wsm_with_rewards(since_hours: int = 24) -> List[Dict[str, Any]]:
 def fetch_transition_by_id(transition_id: int) -> dict | None:
     """Fetch a single WSM transition row by primary key.
 
-    Returns dict with at minimum: transition_id, merchant_id, action_id, was_executed.
+    Returns dict with keys: transition_id, merchant_id, action_id, was_executed,
+    action_params (parsed from action_params_json).
     Returns None if not found.
-    Used by /approve endpoint for ownership validation.
+    Used by /approve endpoint for ownership validation and discount_pct mismatch check.
     """
     with _conn() as c:
         row = c.execute(
             text("""
-                SELECT transition_id, merchant_id, action_id, was_executed
+                SELECT transition_id, merchant_id, action_id, was_executed,
+                       action_params_json
                 FROM wsm_transitions_v3
                 WHERE transition_id = :tid
             """),
@@ -623,7 +625,10 @@ def fetch_transition_by_id(transition_id: int) -> dict | None:
         ).fetchone()
         if row is None:
             return None
-        return dict(row._mapping)
+        d = dict(row._mapping)
+        raw = d.pop("action_params_json", None)
+        d["action_params"] = json.loads(raw) if isinstance(raw, str) else (raw or {})
+        return d
 
 
 def rollback_wsm_execution(transition_id: int, execution_params: dict) -> None:

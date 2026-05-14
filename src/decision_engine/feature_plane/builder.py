@@ -81,12 +81,13 @@ class FeatureBuilder:
     def _extract_inventory_days(self, signals: dict) -> float:
         """Days of supply from raw signals.
 
-        Phase 2/3: will use `inventory_days_p10` (10th percentile)
-        for conservative stock-out risk estimation.
+        Reads `inventory_days_p10` (10th percentile — most constrained SKU) as
+        the primary field, matching the data partner schema and DecisionFeatureVector
+        contract. Falls back to `inventory_days` for legacy signal payloads.
         """
-        val = signals.get("inventory_days")
+        val = signals.get("inventory_days_p10", signals.get("inventory_days"))
         if val is None:
-            log.debug("[FeatureBuilder] inventory_days missing — defaulting to 0.0")
+            log.warning("[FeatureBuilder] inventory_days_p10 missing — defaulting to 0.0")
             return 0.0
         return max(0.0, float(val))  # ge=0.0 enforced by contract
 
@@ -98,7 +99,7 @@ class FeatureBuilder:
         """
         val = signals.get("margin_pct", signals.get("avg_margin_pct"))
         if val is None:
-            log.debug("[FeatureBuilder] margin_pct missing — defaulting to 0.0")
+            log.warning("[FeatureBuilder] margin_pct missing — defaulting to 0.0")
             return 0.0
         return _clamp(float(val), 0.0, 1.0)
 
@@ -109,7 +110,7 @@ class FeatureBuilder:
         """
         val = signals.get("repeat_rate_7d", signals.get("repeat_purchase_rate"))
         if val is None:
-            log.debug("[FeatureBuilder] repeat_rate_7d missing — defaulting to 0.0")
+            log.warning("[FeatureBuilder] repeat_rate_7d missing — defaulting to 0.0")
             return 0.0
         return _clamp(float(val), 0.0, 1.0)
 
@@ -125,7 +126,7 @@ class FeatureBuilder:
             raw = signals.get("checkout_cvr")
             val = raw.get("current") if isinstance(raw, dict) else raw
         if val is None:
-            log.debug("[FeatureBuilder] cvr_7d missing — defaulting to 0.0")
+            log.warning("[FeatureBuilder] cvr_7d missing — defaulting to 0.0")
             return 0.0
         return _clamp(float(val), 0.0, 1.0)
 
@@ -136,7 +137,7 @@ class FeatureBuilder:
         """
         val = signals.get("cvr_30d")
         if val is None:
-            log.debug("[FeatureBuilder] cvr_30d missing — defaulting to 0.0")
+            log.warning("[FeatureBuilder] cvr_30d missing — defaulting to 0.0")
             return 0.0
         return _clamp(float(val), 0.0, 1.0)
 
@@ -147,7 +148,7 @@ class FeatureBuilder:
         """
         val = signals.get("promo_redemption_30d", signals.get("promo_incrementality"))
         if val is None:
-            log.debug("[FeatureBuilder] promo_redemption_30d missing — defaulting to 0.0")
+            log.warning("[FeatureBuilder] promo_redemption_30d missing — defaulting to 0.0")
             return 0.0
         return _clamp(float(val), 0.0, 1.0)
 
@@ -173,7 +174,7 @@ class FeatureBuilder:
         """
         val = signals.get("churn_score", signals.get("overdue_ratio"))
         if val is None:
-            log.debug("[FeatureBuilder] churn_score missing — defaulting to 0.0")
+            log.warning("[FeatureBuilder] churn_score missing — defaulting to 0.0")
             return 0.0
         return _clamp(float(val), 0.0, 1.0)
 
@@ -185,7 +186,7 @@ class FeatureBuilder:
         """
         val = signals.get("seasonality_index")
         if val is None:
-            log.debug("[FeatureBuilder] seasonality_index missing — defaulting to 1.0")
+            log.warning("[FeatureBuilder] seasonality_index missing — defaulting to 1.0")
             return 1.0
         return float(val)
 
@@ -197,6 +198,6 @@ class FeatureBuilder:
         """
         val = signals.get("benchmark_gap_score")
         if val is None:
-            log.debug("[FeatureBuilder] benchmark_gap_score missing — defaulting to 0.0")
+            log.warning("[FeatureBuilder] benchmark_gap_score missing — defaulting to 0.0")
             return 0.0
         return float(val)

@@ -269,7 +269,14 @@ class MerchantStateMachine:
         return min(base + bonus, 1.0)
 
     def _detect_signal_acceleration(self, state: DimensionState, signals: dict) -> bool:
-        """Detect if signals show accelerating deterioration."""
+        """Detect if signals show accelerating deterioration.
+
+        NOTE (FIX-18 / S6-1, deferred): Currently only checks conversion (checkout_cvr)
+        and retention (overdue_ratio) dimensions. Acquisition and promotion acceleration
+        checks are not implemented — L0 signal schema for these dimensions is not yet
+        finalized. Implement after data ingestion is complete.
+        Always returns False for acquisition and promotion dimensions.
+        """
         # checkout_cvr trend dict
         cvr = signals.get("checkout_cvr")
         if isinstance(cvr, dict):

@@ -42,6 +42,8 @@ import re
 from pathlib import Path
 from typing import Any
 
+from ...utils.path_utils import safe_merchant_id
+
 log = logging.getLogger(__name__)
 
 # Hard clip for gmv_lift_prior: scoring.py clips at _clip(pred / 0.30),
@@ -49,9 +51,12 @@ log = logging.getLogger(__name__)
 # headroom and prevent bandit weight explosion on small/high-AOV merchants.
 _GMV_LIFT_MAX = 0.25
 
-# Default playbook directory relative to project root
+# Default playbook directory relative to V3 project root.
+# Path depth from this file to V3/:
+#   playbook_registry.py → pillar1_kg/ → layer2_decision/ → decision_engine/ → src/ → V3/
+# That is 5 path components up = parents[4].
 _DEFAULT_PLAYBOOK_DIR = str(
-    Path(__file__).resolve().parents[5] / "playbooks"
+    Path(__file__).resolve().parents[4] / "playbooks"
 )
 
 
@@ -129,26 +134,56 @@ class PlaybookRegistry:
             self._loaded = True
             return
 
-        yaml_files = list(pb_path.glob("*.yaml")) + list(pb_path.glob("*.yml"))
+        # Scan root (flat stub playbooks) + meta/ (ADR-0011 Layer 1 meta-patterns).
+        # meta/ files use the 'meta_pattern:' top-level key instead of 'playbook:'.
+        # Subdirectories starting with '_' (e.g. _deferred/) are skipped — they
+        # contain dormant patterns awaiting Phase 2 dependencies. Loading them
+        # would register non-activatable triggers as live candidates.
+        meta_path = pb_path / "meta"
+        meta_yamls = [
+            f for f in (
+                list(meta_path.glob("*.yaml")) + list(meta_path.glob("*.yml"))
+            )
+            if not any(part.startswith("_") for part in f.relative_to(pb_path).parts)
+        ] if meta_path.exists() else []
+        yaml_files = (
+            list(pb_path.glob("*.yaml")) + list(pb_path.glob("*.yml"))
+            + meta_yamls
+        )
         loaded = 0
         for fpath in sorted(yaml_files):
             try:
                 with open(fpath, "r", encoding="utf-8") as fh:
                     data = yaml.safe_load(fh)
 
-                if not isinstance(data, dict) or "playbook" not in data:
+                if not isinstance(data, dict):
                     log.warning(
-                        "[playbook_registry] Skipping %s: missing required 'playbook' key. "
+                        "[playbook_registry] Skipping %s: not a valid YAML dict.",
+                        fpath.name,
+                    )
+                    continue
+
+                # Support both flat playbooks ('playbook:' key) and ADR-0011 meta-patterns
+                # ('meta_pattern:' key). Normalize to a single internal structure.
+                is_meta = "meta_pattern" in data
+                if is_meta:
+                    pb_meta = data["meta_pattern"]
+                elif "playbook" in data:
+                    pb_meta = data["playbook"]
+                else:
+                    log.warning(
+                        "[playbook_registry] Skipping %s: missing 'playbook' or 'meta_pattern' key. "
                         "Check YAML schema — this file produces zero candidates.",
                         fpath.name,
                     )
                     continue
 
-                pb_meta = data["playbook"]
                 pb_id = pb_meta.get("id", fpath.stem)
                 module = pb_meta.get("module", "")
 
-                # Merge top-level keys into a flat playbook dict for easy access
+                # Merge top-level keys into a flat playbook dict for easy access.
+                # _is_meta=True marks ADR-0011 Layer 1 meta-patterns; these are
+                # preferred over flat stub playbooks in match_playbook().
                 playbook: dict[str, Any] = {
                     "id": pb_id,
                     "module": module,
@@ -158,6 +193,7 @@ class PlaybookRegistry:
                     "patterns": data.get("patterns", []),
                     "constraints": data.get("constraints", []),
                     "_source_file": fpath.name,
+                    "_is_meta": is_meta,  # True = ADR-0011 meta-pattern; False = flat stub
                 }
 
                 # Validate structure — issues are logged but never block loading.
@@ -182,7 +218,8 @@ class PlaybookRegistry:
     _VALID_MSM_STATES = frozenset({"HEALTHY", "WATCH", "DEGRADING", "CRITICAL"})
 
     # Governed threshold key namespace [ADR-0011 / SOP Section 5].
-    # Add new keys here AND in docs/playbook_authoring_sop.md Section 5 table.
+    # Add new ACTIVE keys here AND in docs/playbook_authoring_sop.md Section 5 table
+    # with status=active and introduced_at annotation.
     # Unknown keys at brand binding load time emit a WARNING (not an error).
     _KNOWN_THRESHOLD_KEYS = frozenset({
         "cac_spike_ratio",
@@ -191,11 +228,33 @@ class PlaybookRegistry:
         "sub_rate_critical_pct",
         "sku_concentration_threshold",
         "channel_nonsubscribable_share",
-        "brand_dr_split_threshold",
-        "destination_cvr_gap_threshold",
-        "inventory_safety_days",
+        "destination_cpp_gap_threshold",  # renamed from destination_cvr_gap_threshold 2026-04-16: CPP replaces CVR per partner calibration
         "mix_diagnosis_min_delta_pp",
-        "calibration_status",        # metadata key — not a signal threshold
+        # ── cba_001 (acquisition_ugc_creative) ──────────────────────────────
+        "cpm_spike_ratio",           # CPM above baseline × multiplier → WATCH
+        "creative_ugc_share_floor",  # min UGC share of spend to consider creative mix healthy
+        # ── cba_002 (conversion_compliance_friction) ─────────────────────────
+        "cvr_collapse_threshold",    # CVR drop fraction (vs baseline) that triggers CRITICAL
+        "recent_change_window_days", # days look-back for site/flow/legal change detection
+    })
+
+    # Threshold metadata fields: present alongside thresholds but are not
+    # signal threshold variables. Skipped during unknown-key validation.
+    _THRESHOLD_METADATA_FIELDS = frozenset({
+        "calibration_status",
+    })
+
+    # Dormant threshold keys: pre-registered for Phase 2 patterns in _deferred/.
+    # Keys here are KNOWN (no "unknown key" warning) but BLOCKED — any active
+    # brand binding that references a dormant key emits a distinctive WARNING.
+    # [SOP Section 5 / ADR-0012]
+    _DORMANT_THRESHOLD_KEYS = frozenset({
+        # ── cbb_001 (acquisition_ltv_quality_trap, Phase 2) ─────────────────
+        "cac_improvement_floor",           # retargeting CAC floor below which LTV trap suspected
+        "offer_creative_share_threshold",  # offer-led creative share of retargeting spend
+        # ── demoted 2026-04-16: registered but unexercised, no active pattern reference ──
+        "brand_dr_split_threshold",        # brand spend fraction → require separate CPA view
+        "inventory_safety_days",           # inventory days threshold for spend reduction
     })
 
     # Valid calibration_status values [ADR-0011]
@@ -230,6 +289,7 @@ class PlaybookRegistry:
             )
 
         # 2. actions must be non-empty — no actions = no candidates
+        is_meta = playbook.get("_is_meta", False)
         actions = playbook.get("actions", [])
         if not actions:
             issues.append(f"[{pb_id}] actions list is empty — no candidates will be generated")
@@ -239,17 +299,21 @@ class PlaybookRegistry:
                 # 3a. action must have an id
                 if not action.get("id"):
                     issues.append(f"[{pb_id}] actions[{i}] missing 'id' field")
-                # 3b. expected_utility is the U_base KG prior — missing = scoring fallback
+                # 3b. expected_utility check.
+                # ADR-0011 meta-patterns: U_base comes from brand bindings, not inline
+                # expected_utility — skip the numeric check for meta-pattern actions.
+                # Flat stub playbooks: expected_utility is required.
                 utility = action.get("expected_utility")
-                if utility is None:
-                    issues.append(
-                        f"[{pb_id}] action '{aid}' missing 'expected_utility' — "
-                        f"scoring will fall back to INDUSTRY_BENCHMARKS (lower confidence)"
-                    )
-                elif not isinstance(utility, (int, float)):
-                    issues.append(
-                        f"[{pb_id}] action '{aid}' expected_utility={utility!r} is not numeric"
-                    )
+                if not is_meta:
+                    if utility is None:
+                        issues.append(
+                            f"[{pb_id}] action '{aid}' missing 'expected_utility' — "
+                            f"scoring will fall back to INDUSTRY_BENCHMARKS (lower confidence)"
+                        )
+                    elif not isinstance(utility, (int, float)):
+                        issues.append(
+                            f"[{pb_id}] action '{aid}' expected_utility={utility!r} is not numeric"
+                        )
 
         # 4. triggers must be non-empty — no triggers = only last-resort fallback match
         triggers = playbook.get("triggers", [])
@@ -286,9 +350,22 @@ class PlaybookRegistry:
         brand = data.get("brand", filename)
         thresholds = data.get("thresholds", {})
 
-        # 1. Threshold key governance: warn on undeclared keys
+        # 1. Threshold key governance: check for dormant keys first (more specific
+        #    warning), then unknown keys. Dormant keys are pre-registered for
+        #    Phase 2 patterns and must NOT appear in active brand bindings.
+        #    Metadata fields (_THRESHOLD_METADATA_FIELDS) are skipped entirely.
         for key in thresholds:
-            if key not in self._KNOWN_THRESHOLD_KEYS:
+            if key in self._THRESHOLD_METADATA_FIELDS:
+                continue
+            if key in self._DORMANT_THRESHOLD_KEYS:
+                log.warning(
+                    "[playbook_registry] %s: threshold key '%s' is DORMANT — "
+                    "it belongs to a Phase 2 deferred pattern (playbooks/meta/_deferred/) "
+                    "and must not be referenced in an active brand binding. "
+                    "See docs/partner_clarification_queue/ and ADR-0012.",
+                    brand, key,
+                )
+            elif key not in self._KNOWN_THRESHOLD_KEYS:
                 log.warning(
                     "[playbook_registry] %s: unknown threshold key '%s' — "
                     "add to _KNOWN_THRESHOLD_KEYS and SOP Section 5 table. "
@@ -316,14 +393,26 @@ class PlaybookRegistry:
                         brand, action_id, action_cal, sorted(self._VALID_CALIBRATION_STATUSES),
                     )
 
-    def match_playbook(self, module: str, pattern: dict) -> dict | None:
+    def match_playbook(self, module: str, pattern: dict, merchant_id: str = "") -> dict | None:
         """Find best matching playbook for a module + MSM state context.
 
-        Phase 1: return the first playbook for the module (simple module match).
-        Phase 2: evaluate trigger conditions in pattern against playbook triggers.
+        ADR-0012 contract: returns dict | None (single playbook, never a list).
+        Premise: brand-bound patterns within the same module have mutually
+        exclusive trigger conditions. If this premise is violated, escalate to
+        list[dict] return type per ADR-0012 supersession process.
 
-        Returns None if no playbook registered for this module.
-        Partner fills in trigger conditions; architecture wires the lookup.
+        Selection priority (in order):
+          1. Brand-bound meta-pattern matching MSM state, alphabetical by id.
+             Requires merchant_id. Uses get_brand_binding() — triggers lazy load.
+          2. Any meta-pattern matching MSM state (first found, load order).
+          3. Any flat playbook matching MSM state (first found).
+          4. Any meta-pattern (no MSM state match — last-resort).
+          5. First registered playbook for module.
+
+        Args:
+          module:      CPG module name (retention | acquisition | conversion | promotion)
+          pattern:     context dict; pattern["msm_state"] drives trigger matching
+          merchant_id: if provided, enables brand-binding-aware selection (Priority 1)
         """
         self._ensure_loaded()
 
@@ -331,15 +420,40 @@ class PlaybookRegistry:
         if not candidates:
             return None
 
-        # Phase 2: evaluate trigger conditions (msm_state match)
-        # For now, return the best match based on msm_state alignment
+        # Collect all MSM-state-matching playbooks by tier.
+        # ADR-0011: meta-patterns take priority over flat stubs.
         msm_state = pattern.get("msm_state", "")
+        meta_matches: list[dict] = []
+        flat_match: dict | None = None
+
         for pb in candidates:
             for trigger in pb.get("triggers", []):
                 if trigger.get("msm_state", "") == msm_state:
-                    return pb
+                    if pb.get("_is_meta"):
+                        meta_matches.append(pb)
+                    elif flat_match is None:
+                        flat_match = pb
+                    break  # one trigger match per playbook is enough
 
-        # Fallback: return the first playbook for the module
+        if meta_matches:
+            # Priority 1: brand-bound meta-pattern, deterministic alphabetical by id.
+            # Alphabetical order is the tiebreak for mutual-exclusivity; if two patterns
+            # are truly exclusive only one will ever bind at runtime. [ADR-0012]
+            if merchant_id:
+                bound = [pb for pb in meta_matches
+                         if self.get_brand_binding(merchant_id, pb["id"])]
+                if bound:
+                    return min(bound, key=lambda pb: pb["id"])
+            # Priority 2: first meta-pattern in load order (no brand binding)
+            return meta_matches[0]
+
+        if flat_match:
+            return flat_match
+
+        # No MSM state match: prefer any meta-pattern over flat stubs
+        for pb in candidates:
+            if pb.get("_is_meta"):
+                return pb
         return candidates[0]
 
     def get_base_utility(self, playbook_id: str, context: dict) -> float | None:
@@ -397,7 +511,13 @@ class PlaybookRegistry:
         """
         import yaml  # lazy import
 
-        brand_dir = Path(self._playbook_dir) / "brands" / merchant_id
+        # Empty merchant_id means "no specific merchant" (test/fallback context).
+        # No brand dir to load — return empty gracefully without path validation.
+        if not merchant_id:
+            self._brand_bindings[merchant_id] = {}
+            return {}
+
+        brand_dir = Path(self._playbook_dir) / "brands" / safe_merchant_id(merchant_id)
         if not brand_dir.exists():
             log.debug("[playbook_registry] No brand binding dir for %s", merchant_id)
             self._brand_bindings[merchant_id] = {}

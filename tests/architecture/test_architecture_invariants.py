@@ -139,6 +139,11 @@ _CROSS_LAYER_ALLOWLIST: list[tuple[str, int]] = [
     (str(Path("layer2_decision") / "scoring.py"), 3),
     # decision_verifier.py may import _MARGIN_FLOOR from layer3_value/constraints.py (ADR-0007)
     (str(Path("layer2_decision") / "pillar3_llm" / "decision_verifier.py"), 3),
+    # pipeline.py (L4) writes Time-1 decision log records to layer5_wsm/decision_log.py.
+    # Deliberate downward write: orchestrator emits to learning fabric (L4→L5).
+    # Data direction is correct (L4 writes, L5 stores); L5 never imports from L4.
+    # Import is lazy (inside _write_decision_log_record) to minimise coupling surface.
+    (str(Path("layer4_serving") / "pipeline.py"), 5),
 ]
 
 
@@ -503,4 +508,47 @@ def test_llm_renderer_render_from_snapshot_uses_snapshot_input():
         "(winner_action or candidate_id). "
         "The renderer appears to be ignoring the snapshot input. "
         "See ADR-0009."
+    )
+
+
+# ── Test 10: match_playbook() return type is dict | None ─────────────────────
+
+def test_match_playbook_return_type_is_dict_or_none():
+    """match_playbook() return annotation must be 'dict | None', never 'list[dict]'.
+
+    Enforces: ADR-0012 — match_playbook is a pattern routing decision, not a
+    multi-candidate ranker. The dict | None contract holds as long as brand-bound
+    patterns within the same module have mutually exclusive trigger conditions.
+
+    Changing this return type to list[dict] is an authorized escalation path, but
+    it requires explicit ADR-0012 supersession — it must not happen silently.
+
+    If this test fails:
+    - If return type was changed without authorization: restore dict | None.
+    - If this is an authorized Option 2 escalation: write the superseding ADR,
+      update pipeline._generate_candidates() and kg_dryrun.py callers (~40 lines),
+      then update this invariant test to assert list[dict] instead.
+
+    See: docs/adr/0012-match-playbook-single-return-contract.md
+    """
+    registry_path = _src_file("layer2_decision", "pillar1_kg", "playbook_registry.py")
+    tree = _parse(registry_path)
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.FunctionDef) and node.name == "match_playbook":
+            assert node.returns is not None, (
+                "match_playbook() is missing a return type annotation. "
+                "It must be annotated as 'dict | None'. See ADR-0012."
+            )
+            annotation_src = ast.unparse(node.returns)
+            assert "list" not in annotation_src.lower(), (
+                f"match_playbook() return type is '{annotation_src}', not 'dict | None'. "
+                "Changing to list[dict] requires explicit ADR-0012 supersession. "
+                "See docs/adr/0012-match-playbook-single-return-contract.md"
+            )
+            return  # found and verified
+
+    pytest.fail(
+        "match_playbook() not found in playbook_registry.py. "
+        "Either it was renamed or deleted — restore it. See ADR-0012."
     )

@@ -60,7 +60,7 @@ class DecisionVerifier:
         """
         step_msm = self._verify_msm_trigger(msm_state, candidate)
         step_margin = self._verify_margin_gate(candidate, policy)
-        step_inventory = self._verify_inventory_gate(candidate, candidate)
+        step_inventory = self._verify_inventory_gate(candidate, candidate.get("signals", {}))
         step_conflict = self._verify_conflict_check(candidate, msm_state, all_candidates)
 
         all_passed = all([

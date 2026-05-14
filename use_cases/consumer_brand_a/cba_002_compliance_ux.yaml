@@ -1,0 +1,106 @@
+# ── Use Case SSoT: cba_002 — Compliance UX + CVR Collapse ────────────────────
+# Layer 3 evidence record [ADR-0011]
+# RULE: This is the Single Source of Truth for all cba_002 observed data.
+#       Brand binding (playbooks/brands/consumer_brand_a/conversion_compliance_friction.yaml)
+#       references evidence_case: "cba_002" and contains only lean priors.
+#       Derivation comments in brand binding must NOT duplicate data here.
+# ─────────────────────────────────────────────────────────────────────────────
+
+use_case_id: cba_002
+brand: consumer_brand_a
+meta_pattern_ref: conversion_compliance_friction
+module: conversion
+observed_at: "Phase 1 intake — timeframe to be confirmed by partner"
+evidence_quality: high             # specific CVR before/after confirmed; 3× recovery confirmed by partner
+
+calibration_value_for:
+  - action_id: AUDIT_RECENT_CHANGES
+    gmv_lift_derivation:
+      method: diagnostic_prevention_value
+      prevented_action: "mobile UX redesign or paid source audit when a recent compliance deploy is the actual cause"
+      prevented_action_cost_est: "3-5 days engineering + 1-2 weeks legal review cycle if remediation starts from the wrong hypothesis"
+      rationale: >
+        Before triggering remediation, audit the timeline of recent deploys to
+        confirm compliance friction as root cause. The diagnostic action is low
+        cost, while preventing the wrong remediation path saves engineering time
+        and legal review cycle time.
+      estimated: true
+      gmv_lift_estimate: 0.03
+
+  - action_id: REMOVE_COMPLIANCE_FRICTION
+    gmv_lift_derivation:
+      method: rate_lift_to_gmv_lift
+      cvr_before: 0.009                 # <1%; using 0.9% conservatively
+      cvr_after_recovery_multiple: 3.0  # partner confirmed "CVR recovered 3×"
+      cvr_after_est: 0.027              # 3× recovery from 0.9%
+      cvr_delta_pp: 0.018               # 2.7% - 0.9% = 1.8 percentage points
+      cross_source_multiplier: 2.0      # paid + organic both benefit simultaneously
+      conversion_driven_revenue_share: 0.80  # conservative estimate
+      gmv_lift_estimate: 0.12
+      estimated: true
+      derivation_note: >
+        0.018 × 2.0 × 0.80 ≈ 0.029 pure CVR-delta basis.
+        Rounded up to 0.12 because: (1) CAC also improved as conversion
+        efficiency was restored (compound benefit), (2) 3× recovery is a
+        large-magnitude recovery, (3) health data quiz is the PRIMARY
+        conversion flow (high traffic concentration). Session count, monthly
+        GMV, and paid/organic split are all estimated pending partner data.
+
+data_observed:
+  period: "Phase 1 intake — timeframe to be confirmed by partner"
+
+  trigger_event:
+    change_type: legal_compliance_deploy
+    element: health_data_consent_popup
+    placement: quiz_entry
+    copy_issue: "clinical language, implemented without UX testing"
+    affected_flow: personalized_quiz   # health data → product recommendation
+
+  before_popup:
+    site_cvr: 0.025                    # 2.5%
+    paid_cvr_affected: true
+    organic_cvr_affected: true
+
+  after_popup_deployed:
+    site_cvr: 0.009                    # <1%; using 0.9% conservatively
+    onset: "overnight"
+    cross_source_symmetry: true        # both paid and organic affected simultaneously
+
+  after_remediation:
+    cvr_recovery_multiple: 3.0         # CVR recovered 3× — confirmed by partner
+    cvr_after_recovery_est: 0.027      # 3 × 0.9%
+    cross_source_benefit: true         # fix benefited paid and organic simultaneously
+    cac_improvement_observed: true     # "CAC improved as conversion efficiency was restored"
+
+action_taken: REMOVE_COMPLIANCE_FRICTION
+root_cause_confirmed: compliance_friction
+
+counterfactual: >
+  Without the timeline correlation diagnostic (SOP Section 10 proxy-trigger
+  discipline), the team would have interpreted the CVR collapse as either a
+  traffic quality issue (questioning paid sources) or a mobile UX problem (since
+  mobile ATC was the MSM CRITICAL proxy signal). Both diagnoses would have led
+  to wrong remediations: paid media audits, mobile redesign, or audience
+  retargeting. The actual root cause (clinical compliance popup copy) would
+  have remained in place, continuing to block the primary conversion flow.
+  CVR would have remained at <1% until someone eventually audited recent
+  deploys by chance.
+
+outcome_value: >
+  Root cause identified as compliance friction via timeline correlation — the
+  CVR drop onset coincided with the compliance popup deploy. After redesigning
+  the popup copy and providing alternative flow paths, CVR recovered 3× (from
+  <1% back to ~2.7%). Fix applied to the core flow benefited both paid and
+  organic traffic simultaneously (cross-source symmetry). CAC improved as a
+  downstream effect because conversion efficiency was restored. Pattern
+  established: for sudden cross-source CVR collapse, always audit recent
+  site/flow/legal changes BEFORE questioning traffic quality or media
+  performance. This is the foundational case for SOP Section 10 (Proxy
+  Trigger Discipline).
+
+partner_clarifications_needed:
+  - "Exact date of the compliance popup deploy and baseline CVR period"
+  - "Monthly sessions to the quiz flow (for accurate gmv_lift calculation)"
+  - "Paid vs organic split of affected traffic"
+  - "Monthly GMV during the observation period"
+  - "Was the 3× recovery measured against the collapsed CVR or against the original baseline?"

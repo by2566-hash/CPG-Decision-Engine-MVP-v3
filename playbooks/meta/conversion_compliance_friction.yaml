@@ -1,0 +1,159 @@
+# ── Meta-Pattern: Conversion — Compliance/Legal Friction CVR Collapse ─────────
+# Layer 1 (platform-level) [ADR-0011]
+# RULE: Zero hardcoded threshold numbers. All thresholds use ${thresholds.key}.
+#
+# SOP Section 10 (Proxy Trigger Discipline) applies to this pattern.
+# MSM CRITICAL trigger uses mobile_below_degrading AND cvr_trending_down as
+# proxy for site-wide friction. analysis_path MUST start with timeline_correlation.
+# ─────────────────────────────────────────────────────────────────────────────
+
+meta_pattern:
+  id: conversion_compliance_friction
+  module: conversion
+  version: "1.0"
+  tags: [cvr, compliance, legal, friction, site_change, cross_source]
+  reusable: true
+  description: >
+    Detects sudden site-wide CVR collapse caused by newly introduced compliance
+    or legal friction (e.g. health data consent popups, cookie banners, age
+    verification flows) that affect all traffic sources simultaneously.
+
+    The distinguishing signal is suddenness and cross-source symmetry: CVR drops
+    overnight across both paid and organic traffic, with no change in traffic
+    quality, creative, or media spend. This rules out media problems and confirms
+    on-site friction as the root cause.
+
+    Root cause type: compliance_friction (not funnel optimization, not traffic
+    quality, not offer fatigue). The correct remediation is friction removal or
+    redesign, not media or audience changes.
+
+    IMPORTANT — PROXY TRIGGER NOTE: MSM CRITICAL for this pattern fires via
+    mobile_below_degrading AND cvr_trending_down. This is a proxy for site-wide
+    friction. Root cause analysis must NOT start with mobile vs desktop analysis.
+    Compliance changes affect all users equally — the mobile signal is incidental.
+    See analysis_path[0] (timeline_correlation) and SOP Section 10.
+
+triggers:
+  - name: cvr_collapse_sudden_cross_source
+    msm_state: CRITICAL
+    condition: >
+      cvr_drop_vs_baseline > ${thresholds.cvr_collapse_threshold}
+      AND recent_site_change_flag == true
+    metric: cvr_drop_vs_baseline
+    note: >
+      Both conditions required. CVR drop alone could be traffic quality.
+      recent_site_change_flag (within recent_change_window_days look-back)
+      is the conjunction that confirms on-site friction as root cause.
+      MSM CRITICAL resolves from mobile_below_degrading AND cvr_trending_down —
+      these are proxy signals, not the root cause themselves.
+
+analysis_path:
+  - step: timeline_correlation
+    description: >
+      Map CVR drop against timeline of recent site changes, legal/compliance
+      deploys, A/B test activations, and flow modifications. Identify whether
+      the CVR drop onset coincides with a specific deploy or change event.
+    must_run_first: true
+    rationale: >
+      MSM CRITICAL trigger uses mobile ATC rate as a proxy signal for site-wide
+      friction. The actual root cause may be a compliance or legal change that
+      affects all users equally — not a mobile-specific UX problem. Starting
+      with mobile vs desktop analysis would lead to the wrong remediation
+      (mobile UX redesign vs compliance friction removal). Timeline correlation
+      is the only valid first step to confirm site-wide vs segment-specific root cause.
+    data_source: deploy_log
+    output_metric: change_event_timing_vs_cvr_drop
+
+  - step: cross_source_confirmation
+    description: >
+      Confirm that CVR dropped across BOTH paid and organic traffic simultaneously.
+      Cross-source symmetry rules out media-specific problems (creative fatigue,
+      audience saturation, bid changes) and confirms on-site root cause.
+    data_source: analytics
+    output_metric: paid_vs_organic_cvr_delta
+    decision_gate: "paid_cvr_drop > 0 AND organic_cvr_drop > 0"
+
+  - step: simulate_conversion_path
+    description: >
+      Simulate the full conversion path as a new visitor using an incognito window.
+      Walk through every step of the primary conversion flow. Identify all friction
+      points introduced since the last known-good deploy: consent popups, legal
+      copy, flow changes, new form fields, redirect chains.
+    data_source: manual_simulation
+    output_metric: friction_points_identified
+
+  - step: identify_friction_root_cause
+    description: >
+      Pinpoint the specific friction element: consent popup language, placement,
+      mandatory vs optional flow, visual design, or copy. Confirm whether the
+      friction was introduced by legal requirement or by implementation choice.
+      Legal requirements constrain the action space — implementation choices do not.
+    data_source: code_diff
+    output_metric: friction_element_confirmed
+
+  - step: evaluate_alternative_paths
+    description: >
+      Identify whether alternative conversion paths exist for users who exit the
+      primary flow due to compliance friction. Design an alternative path that
+      satisfies the legal requirement while reducing abandonment.
+    data_source: analytics
+    output_metric: alternative_path_cvr_estimate
+
+root_cause_type: compliance_friction
+
+actions:
+  - id: AUDIT_RECENT_CHANGES
+    type: DIAGNOSTIC
+    description: >
+      Before any flow change, audit the timeline of recent site, flow, and
+      legal/compliance deploys to confirm compliance friction as root cause.
+      Simulate the conversion path as a new visitor (incognito). Identify
+      any friction points introduced recently. Do not trigger remediation
+      until timeline correlation confirms the root cause.
+    expected_utility_basis:
+      business_logic: >
+        Prevents misattributing CVR collapse to traffic quality or media issues
+        when a recent compliance or site change is the actual cause. The
+        diagnostic cost is near-zero but the prevention value is high because
+        triggering the wrong remediation path can consume engineering and legal
+        review time before the true root cause is confirmed.
+      gmv_lift_formula: >
+        prevented_wrong_diagnosis_cost / monthly_gmv
+    requires_approval: false
+    rollback_available: false
+
+  - id: REMOVE_COMPLIANCE_FRICTION
+    type: FLOW_CHANGE
+    description: >
+      Remove or redesign friction introduced by compliance or legal changes.
+      Provide alternative paths for users who exit the primary conversion flow.
+      Prioritize implementation redesign (copy, placement, visual) before
+      requesting legal re-review of the requirement itself.
+      Apply fix to the core flow — benefits paid and organic simultaneously.
+    expected_utility_basis:
+      business_logic: >
+        Compliance friction introduced without UX testing creates abandonment
+        at the highest-intent point of the funnel (users who reached the
+        conversion step). Friction removal recovers conversion without any
+        media spend change, benefiting both paid and organic traffic simultaneously.
+      gmv_lift_formula: >
+        cvr_recovery_pct × monthly_paid_conversions × aov / monthly_gmv
+        + cvr_recovery_pct × monthly_organic_conversions × aov / monthly_gmv
+    requires_approval: true
+    rollback_available: true
+
+evidence_refs_template:
+  - "Checkout CVR drop: ${metrics.cvr_drop_vs_baseline} vs baseline"
+  - "Onset timing: CVR drop at ${metrics.cvr_collapse_date}, last deploy: ${metrics.last_deploy_date}"
+  - "Cross-source: paid CVR drop ${metrics.paid_cvr_drop}, organic CVR drop ${metrics.organic_cvr_drop}"
+  - "Friction element identified: ${metrics.friction_element_confirmed}"
+
+constraints:
+  attribution_window_days: 0  # Conversion = instant attribution
+  applies_hard_constraints: []  # FLOW_CHANGE — no margin/inventory gate
+
+partner_clarifications_needed:
+  - "What is the minimum CVR drop threshold that confirms compliance friction vs normal variation?"
+  - "How many days look-back should recent_site_change_flag cover? (default: 7 days)"
+  - "Does paid+organic cross-source symmetry need to exceed a minimum threshold to confirm on-site cause?"
+  - "Are there legal constraints on which parts of the compliance flow can be redesigned without re-approval?"

@@ -1,7 +1,7 @@
 # CPG Decision Engine V3 — Architecture Reference
 
 ## Governance References
-- **Architecture Decision Records**: `docs/adr/` — 10 ADRs (0001–0010), every major decision documented with rationale and alternatives
+- **Architecture Decision Records**: `docs/adr/` — 13 ADRs (0001–0013), every major decision documented with rationale and alternatives
 - **Phase Roadmap**: `docs/PHASE_ROADMAP.md` — single source of truth for planned work (Phase 1, Phase 2 dual-track, Phase 3)
 - **Contract Tests**: `tests/contracts/` — enforce typed object invariants
 - **Architecture Invariant Tests**: `tests/architecture/` — detect architectural drift
@@ -14,7 +14,8 @@ tests if types change → implement.
 
 Key ADRs: PolicyDecision [0001] · Feature Plane [0005] · Phase 2 dual-track [0006] ·
 Cross-layer dependency [0007] · LinUCB [0008] · Evidence Graph Snapshot [0009] ·
-Data Source Facade [0010]
+Data Source Facade [0010] · Three-Layer KG [0011] · match_playbook contract [0012] ·
+MSM-state routing [0013]
 
 ---
 
@@ -142,6 +143,8 @@ Data Source Facade [0010]
 **L5.4 Feature History**: 为 bandit / impact estimator / offline evaluation 提供历史特征
 
 - Phase 1 现状: 单表 `wsm_transitions_v3` 合并存储；函数命名按 log 类型区分
+  - 写入接口: `db_client.py` 直接操作（`insert_wsm_transition`, `update_wsm_execution` 等）
+  - `wsm_client.py` 已于 Phase 1 移除（async 设计与系统同步架构不符，功能由 db_client 承担）
 - Phase 3 目标: 按 L5.1-L5.4 分表（需要真实执行数据积累后才有意义）
 - 代码位置: `layer5_wsm/`
 

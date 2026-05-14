@@ -33,6 +33,11 @@ is superseded, write a new ADR that references the old one.
 | [0009](0009-introduce-evidence-graph-snapshot.md) | Introduce Evidence Graph Snapshot | Accepted | 2026-04-10 |
 | [0010](0010-data-source-facade-for-l0.md) | Data Source Facade for L0 (concept — Phase 2 Track A) | Accepted (concept) | 2026-04-10 |
 | [0011](0011-three-layer-kg-playbook-structure.md) | Three-Layer KG Playbook Structure for Multi-Brand Content | Accepted | 2026-04-12 |
+| [0012](0012-match-playbook-single-return-contract.md) | match_playbook() Returns dict \| None (Single-Pattern Routing Contract) | Accepted | 2026-04-13 |
+| [0013](0013-msm-state-driven-routing-contract.md) | MSM-State-Driven Playbook Routing Contract | Accepted | 2026-04-14 |
+| [0014](0014-phase-a-scope-and-runtime-invariants.md) | V3.1 Phase A Scope and Runtime Invariants | Proposed | 2026-04-26 |
+| [0015](0015-outcome-review-v1-directional-post-decision.md) | Outcome Review v1 — Directional, Module-Aware, Post-Decision | Proposed | 2026-04-26 |
+| [0016](0016-v3-1-truth-philosophy.md) | V3.1 Truth Philosophy — Multi-Source Truth, Disagreement Policy, Gate Explainability | Proposed | 2026-04-26 |
 
 ## Contract Tests
 Each ADR introducing a typed object is backed by a contract test in

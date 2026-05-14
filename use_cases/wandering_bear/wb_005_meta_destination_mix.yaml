@@ -1,6 +1,6 @@
 # ── Use Case: WB-005 Meta Traffic Routing to IG/FB Shop Raised CAC ───────────
 # Single Source of Truth for all observed numbers [ADR-0011]
-# Primary evidence for: acquisition_cac_channel_mix brand binding PAUSE_CHANNEL prior
+# Primary evidence for: acquisition_cac_channel_mix brand binding FIX_DESTINATION_ROUTING prior
 # ─────────────────────────────────────────────────────────────────────────────
 
 use_case_id: wb_005
@@ -11,7 +11,7 @@ observed_at: "2023-04"
 evidence_quality: high
 
 calibration_value_for:
-  - action_id: PAUSE_CHANNEL
+  - action_id: FIX_DESTINATION_ROUTING
     gmv_lift_derivation:
       method: cac_improvement_to_gmv_lift
       cac_before: 54.79          # March 2023 sitewide CAC
@@ -57,7 +57,7 @@ data_observed:
   cac_recovery: 9.54             # absolute: $54.79 - $45.25
   cac_improvement_pct: 0.174     # 17.4%
 
-action_taken: PAUSE_CHANNEL   # CHANNEL_CONTROL: disable IG/FB Shop, route to website
+action_taken: FIX_DESTINATION_ROUTING   # CHANNEL_CONTROL: disable IG/FB Shop, route to website
 root_cause_confirmed: channel_routing
 
 counterfactual: >

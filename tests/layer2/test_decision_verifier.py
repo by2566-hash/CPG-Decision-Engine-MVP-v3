@@ -104,13 +104,21 @@ class TestDecisionVerifier:
         assert chain.margin_gate.threshold == 0.15
 
     def test_verify_fails_inventory_too_low(self):
-        """Discount action with inventory_days_p10 < 5 → inventory_gate fails."""
+        """Discount action with inventory_days_p10 < 5 → inventory_gate fails.
+
+        inventory_days_p10 must be nested under candidate["signals"] — matching
+        the real pipeline structure built in _generate_candidates(). A flat
+        structure would cause signals.get("inventory_days_p10") to return None
+        and silently pass the gate (S5-1 fix).
+        """
         msv = _make_msv(ret="DEGRADING")
         candidate = {
             "action_id": "DISCOUNT_10PCT",
             "module": "retention",
             "post_discount_margin": 0.25,
-            "inventory_days_p10": 3,  # below 5-day minimum
+            "signals": {
+                "inventory_days_p10": 3,  # nested — matches real pipeline structure
+            },
         }
         chain = verifier.verify(
             msm_state=msv,

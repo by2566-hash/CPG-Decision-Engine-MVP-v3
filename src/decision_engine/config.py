@@ -1,3 +1,6 @@
+import os
+
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from typing import List
 
@@ -8,8 +11,40 @@ class Settings(BaseSettings):
     # ── Infrastructure ───────────────────────────────────────────────
     postgres_dsn: str = "postgresql://postgres:postgres@localhost:5432/decision_engine"
     redis_url: str = "redis://localhost:6379/0"
-    shopline_app_secret: str = "replace_me"
+    shopline_app_secret: str = "replace_me"   # Shopline webhook HMAC signing secret
     shopline_api_version: str = "v20260301"
+    api_key: str = "replace_me"               # REST API access key (X-API-Key header)
+
+    # ── Startup validators — reject placeholder credentials in non-dev environments ──
+    @field_validator("shopline_app_secret")
+    @classmethod
+    def reject_placeholder_shopline_secret(cls, v: str) -> str:
+        if v == "replace_me" and os.getenv("ALLOW_PLACEHOLDER_SECRETS") != "1":
+            raise ValueError(
+                "shopline_app_secret is still 'replace_me'. "
+                "Set SHOPLINE_APP_SECRET env var, or set ALLOW_PLACEHOLDER_SECRETS=1 for local dev."
+            )
+        return v
+
+    @field_validator("api_key")
+    @classmethod
+    def reject_placeholder_api_key(cls, v: str) -> str:
+        if v == "replace_me" and os.getenv("ALLOW_PLACEHOLDER_SECRETS") != "1":
+            raise ValueError(
+                "api_key is still 'replace_me'. "
+                "Set API_KEY env var, or set ALLOW_PLACEHOLDER_SECRETS=1 for local dev."
+            )
+        return v
+
+    @field_validator("postgres_dsn")
+    @classmethod
+    def reject_default_postgres_dsn(cls, v: str) -> str:
+        if "postgres:postgres@localhost" in v and os.getenv("ALLOW_PLACEHOLDER_SECRETS") != "1":
+            raise ValueError(
+                "postgres_dsn uses default localhost credentials. "
+                "Set POSTGRES_DSN env var, or set ALLOW_PLACEHOLDER_SECRETS=1 for local dev."
+            )
+        return v
 
     # ── Scoring weights ──────────────────────────────────────────────
     default_bandit_alpha: float = 0.25
@@ -71,6 +106,20 @@ class Settings(BaseSettings):
 
     # ── Benchmark engine (Layer 3 — BenchmarkEngine) ─────────────────
     benchmark_min_peer_count: int = 5              # Used by BenchmarkEngine: minimum peers for valid comparison
+
+    # ── L5 Decision Log (Layer 5 — DecisionLog JSONL) ────────────────
+    # Storage root for per-run decision logs. Override with shared path for
+    # multi-machine deployments, or switch to PostgreSQL table in Phase 2.
+    # Env var: DECISION_LOG_DIR
+    decision_log_dir: str = "data/decision_logs"
+
+    # ── LLM rendering (Phase 2 activation) ──────────────────────────────
+    # Phase 1: llm_provider="template" → deterministic template rendering only.
+    # Phase 2: set llm_provider="openai" or "anthropic" and supply llm_api_key.
+    llm_provider: str = "template"     # "template" | "openai" | "anthropic"
+    llm_api_key: str = ""              # Required when llm_provider != "template"
+    llm_model_name: str = "gpt-4o"    # Model name passed to LLM API
+    llm_timeout_ms: int = 5000         # Per-call timeout in milliseconds
 
     # ── Billing (Phase 2 activation) ─────────────────────────────────
     performance_fee_rate: float = 0.10             # Used by billing: % of outcome_delta charged

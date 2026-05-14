@@ -9,6 +9,44 @@
 
 CPG Decision Engine V3 is an **Operating Intelligence Layer** for CPG brands on Shopline. It ingests commerce signals (orders, ads, inventory), diagnoses merchant health across four dimensions, recommends verified actions with dollar-impact estimates, and presents them for human approval before execution. It is **not** a dashboard, **not** a chatbot, and **not** an auto-executor — it is a decision recommendation system that requires merchant confirmation at every step.
 
+## Current Handoff Status
+
+V3 is a validated architecture + MVP foundation, not yet a production-ready deployment. Core tests pass on synthetic data; no real merchant data or external API credentials are required for the test suite. Tests run on in-memory SQLite; local API deployment still requires Postgres/Redis config.
+
+### Works Locally
+- Full 16-step Decision Engine pipeline (Deep Plane)
+- FastAPI backend with 10 endpoints (decision, approval, rollback, policy, health)
+- Fast Plane cache-read serving path
+- 400+ passing tests covering contracts, architecture invariants, and e2e fixtures
+- KG playbook 3-layer routing (meta-patterns, brand bindings, use cases)
+- BrightSkin end-to-end demo fixture
+
+### Not Yet Productionized
+- No production frontend connected to backend yet; static mockup exists in `mockup/`
+- Shopline / Meta / GA4 data connectors are interface stubs
+- External write APIs for action execution are not implemented
+- Airflow DAGs are placeholder stubs (`pass` bodies)
+- Reward backfill / learning loop is stubbed
+- LLM renderer uses deterministic templates, not real LLM API
+- `transition_id` type conflict: UUID in SQL vs int in Python (tracked as SPIKE-014-01)
+- No CI/CD pipeline configured
+
+### Recommended Next Steps
+1. Docker full-stack deployment (Postgres + Redis + FastAPI)
+2. Build/connect frontend to existing API endpoints
+3. Implement real data connector (see ADR-0010)
+4. Implement DAG scheduling (Airflow or cron)
+5. Resolve SPIKE-014-01 (`transition_id` unification)
+6. Integrate real LLM API
+7. Set up CI/CD + lint + typecheck
+
+### Key Architecture Docs for Onboarding
+- `CLAUDE.md` — layer responsibilities and data contracts
+- `docs/PHASE_ROADMAP.md` — what is done vs planned
+- `docs/EVOLUTION_GUIDE.md` — how to make changes safely
+- `docs/adr/` — ADR-0001 through ADR-0016, including proposed V3.1 ADRs
+- `tests/architecture/` — automated architecture guardrails
+
 ## Governance
 This project follows formal architecture governance:
 - **Decisions**: documented in `docs/adr/`

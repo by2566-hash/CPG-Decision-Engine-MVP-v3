@@ -36,8 +36,11 @@ class ImpactCalculator:
             "SUPPRESS":       {"lift_pct_low": 0.00, "lift_pct_mid": 0.00, "lift_pct_high": 0.00},
         },
         "acquisition": {
-            "REALLOCATE_BUDGET": {"cac_reduction_low": 0.05, "cac_reduction_mid": 0.12, "cac_reduction_high": 0.20},
-            "PAUSE_CHANNEL":     {"cac_reduction_low": 0.08, "cac_reduction_mid": 0.15, "cac_reduction_high": 0.25},
+            "REALLOCATE_BUDGET":   {"cac_reduction_low": 0.05, "cac_reduction_mid": 0.12, "cac_reduction_high": 0.20},
+            "FIX_DESTINATION_ROUTING": {"cac_reduction_low": 0.08, "cac_reduction_mid": 0.15, "cac_reduction_high": 0.25},
+            # UGC creative mix actions (acquisition_ugc_creative pattern — cba_001)
+            "AUDIT_CREATIVE_MIX":  {"cac_reduction_low": 0.05, "cac_reduction_mid": 0.10, "cac_reduction_high": 0.18},
+            "SCALE_TOP_CREATIVE":  {"cac_reduction_low": 0.10, "cac_reduction_mid": 0.20, "cac_reduction_high": 0.35},
         },
         "conversion": {
             "REORDER_SHELF":    {"cvr_lift_low": 0.05, "cvr_lift_mid": 0.10, "cvr_lift_high": 0.18},
@@ -45,6 +48,9 @@ class ImpactCalculator:
             # Subscription mix diagnostic actions (conversion_subscription_mix pattern)
             "DIAGNOSE_MIX":     {"lift_pct_low": 0.04, "lift_pct_mid": 0.08, "lift_pct_high": 0.14},
             "FIX_DENOMINATOR":  {"lift_pct_low": 0.02, "lift_pct_mid": 0.05, "lift_pct_high": 0.09},
+            # Compliance friction removal (conversion_compliance_friction pattern — cba_002)
+            "AUDIT_RECENT_CHANGES": {"lift_pct_low": 0.01, "lift_pct_mid": 0.025, "lift_pct_high": 0.05},
+            "REMOVE_COMPLIANCE_FRICTION": {"cvr_lift_low": 0.08, "cvr_lift_mid": 0.18, "cvr_lift_high": 0.30},
         },
         "promotion": {
             "ROTATE_OFFER":  {"margin_lift_low": 0.02, "margin_lift_mid": 0.05, "margin_lift_high": 0.08},
@@ -88,11 +94,12 @@ class ImpactCalculator:
             # Unknown action — return zero estimate
             return ImpactEstimate(confidence=settings.impact_confidence_floor)
 
-        # Extract low/mid/high percentages from benchmark keys
-        values = list(bench.values())
-        pct_low = values[0] if len(values) > 0 else 0.0
-        pct_mid = values[1] if len(values) > 1 else 0.0
-        pct_high = values[2] if len(values) > 2 else 0.0
+        # Extract low/mid/high percentages by key suffix — not positional,
+        # since different benchmark categories use different key names
+        # (e.g. 'lift_pct_low', 'cac_reduction_mid', 'cvr_lift_high').
+        pct_low = bench.get(next((k for k in bench if k.endswith("_low")), ""), 0.0)
+        pct_mid = bench.get(next((k for k in bench if k.endswith("_mid")), ""), 0.0)
+        pct_high = bench.get(next((k for k in bench if k.endswith("_high")), ""), 0.0)
 
         # Dollar conversion: benchmark_pct × relevant merchant metric
         base_dollars = self._get_dollar_base(merchant_state, module)
@@ -119,7 +126,7 @@ class ImpactCalculator:
         n = len(sorted_deltas)
 
         # Percentile-based: conservative=p25, expected=p50, optimistic=p75
-        conservative = sorted_deltas[max(0, n // 4 - 1)] if n >= 4 else sorted_deltas[0]
+        conservative = sorted_deltas[n // 4] if n >= 4 else sorted_deltas[0]
         expected = statistics.median(sorted_deltas)
         optimistic = sorted_deltas[min(n - 1, 3 * n // 4)] if n >= 4 else sorted_deltas[-1]
 

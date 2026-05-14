@@ -11,8 +11,10 @@ from __future__ import annotations
 import logging
 import time
 from datetime import datetime, timezone
+from typing import Any, Optional
 
-from fastapi import FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException, Security
+from fastapi.security.api_key import APIKeyHeader
 from pydantic import BaseModel
 
 from src.decision_engine import db_client
@@ -44,6 +46,19 @@ _approval_gate = MerchantApprovalGate()
 
 _DIMENSIONS = ["acquisition", "conversion", "retention", "promotion"]
 
+# ── API Key authentication ───────────────────────────────────────────
+# All merchant-data endpoints require X-API-Key header.
+# Key value is settings.api_key (env var: API_KEY).
+# /health is intentionally unauthenticated (load-balancer probe).
+
+_API_KEY_HEADER = APIKeyHeader(name="X-API-Key", auto_error=True)
+
+
+def _verify_api_key(api_key: str = Security(_API_KEY_HEADER)) -> str:
+    if api_key != settings.api_key:
+        raise HTTPException(status_code=401, detail="Invalid API key")
+    return api_key
+
 
 # ── Request/Response models ─────────────────────────────────────────
 
@@ -65,9 +80,97 @@ class EmergencyRequest(BaseModel):
     emergency_features: dict = {}
 
 
+class PolicyCreateRequest(BaseModel):
+    """Request body for POST /policy/{merchant_id}.
+
+    Required: policy_version, vertical.
+    Optional: policy_weights (validated to sum ≈ 1.0 when provided),
+    expires_at, plus any additional merchant-specific fields via extra="allow".
+    """
+    policy_version: str
+    vertical: str = "cpg"
+    policy_weights: Optional[dict] = None
+    expires_at: Optional[datetime] = None
+
+    model_config = {"extra": "allow"}
+
+
+class PolicyCreateResponse(BaseModel):
+    status: str
+    merchant_id: str
+    policy_version: str
+    vertical: str
+
+
+class HealthResponse(BaseModel):
+    status: str
+
+
+class ReadinessCheckItem(BaseModel):
+    name: str
+    passed: bool
+    detail: Optional[str] = None
+
+
+class ReadinessResponse(BaseModel):
+    merchant_id: str
+    ready: bool
+    shadow_mode: bool
+    kill_switch: bool
+    checks: list[ReadinessCheckItem]
+
+
+class DimensionHealth(BaseModel):
+    state: str
+    urgency: float
+
+
+class MerchantHealthResponse(BaseModel):
+    merchant_id: str
+    dimensions: dict[str, DimensionHealth]
+    active_alerts: list[str]
+
+
+class ApproveResponse(BaseModel):
+    """Response for POST /decision/{merchant_id}/approve.
+
+    status="approved": transition_id, rollback_token_id, rollback_available_until set.
+    status="pending_acknowledgment": risk_level, message, instructions set.
+    Phase 2: split into discriminated union when approval UX is formalised.
+    """
+    status: str
+    # approved path
+    transition_id: Optional[int] = None
+    rollback_token_id: Optional[str] = None
+    rollback_available_until: Optional[str] = None
+    # pending_acknowledgment path
+    risk_level: Optional[str] = None
+    message: Optional[str] = None
+    instructions: Optional[str] = None
+
+
+class RollbackResponse(BaseModel):
+    status: str
+    token_id: str
+    merchant_id: str
+    action_id: Optional[str] = None
+    note: Optional[str] = None
+
+
+class DecisionResponse(BaseModel):
+    merchant_id: str
+    mode: str
+    msm_state: dict[str, str]
+    emergency_triggered: bool
+    alerts: list[str]
+    policy_version: str
+    weekly_plan: dict[str, Any]
+    top_actions: list[dict[str, Any]]
+
+
 # ── 1. GET /health ──────────────────────────────────────────────────
 
-@app.get("/health")
+@app.get("/health", response_model=HealthResponse)
 def health():
     """Health check endpoint."""
     return {"status": "ok"}
@@ -75,7 +178,7 @@ def health():
 
 # ── 2. GET /readiness/{merchant_id} ─────────────────────────────────
 
-@app.get("/readiness/{merchant_id}")
+@app.get("/readiness/{merchant_id}", response_model=ReadinessResponse, dependencies=[Depends(_verify_api_key)])
 def readiness(merchant_id: str):
     """Go-live readiness checklist for a merchant."""
     checks = rollout.check_readiness(merchant_id)
@@ -91,7 +194,7 @@ def readiness(merchant_id: str):
 
 # ── 3. GET /decision/{merchant_id} ─────────────────────────────────
 
-@app.get("/decision/{merchant_id}")
+@app.get("/decision/{merchant_id}", response_model=DecisionResponse, dependencies=[Depends(_verify_api_key)])
 def decision(merchant_id: str):
     """Deep Plane: run full pipeline and return decision cards.
 
@@ -105,7 +208,11 @@ def decision(merchant_id: str):
             status_code=503, detail="Kill switch active — decisions disabled",
         )
 
-    policy_pack, ranked = run_once(merchant_id)
+    try:
+        policy_pack, ranked = run_once(merchant_id)
+    except Exception as exc:
+        log.exception("[api] /decision pipeline failure merchant=%s", merchant_id)
+        raise HTTPException(status_code=500, detail="Pipeline error") from exc
 
     return {
         "merchant_id": merchant_id,
@@ -121,7 +228,7 @@ def decision(merchant_id: str):
 
 # ── 4. POST /decision/{merchant_id}/emergency ──────────────────────
 
-@app.post("/decision/{merchant_id}/emergency")
+@app.post("/decision/{merchant_id}/emergency", dependencies=[Depends(_verify_api_key)])
 def emergency(merchant_id: str, body: EmergencyRequest | None = None):
     """Fast Plane emergency path.
 
@@ -146,7 +253,7 @@ def emergency(merchant_id: str, body: EmergencyRequest | None = None):
 
 # ── 5. POST /decision/{merchant_id}/approve ─────────────────────────
 
-@app.post("/decision/{merchant_id}/approve")
+@app.post("/decision/{merchant_id}/approve", response_model=ApproveResponse, dependencies=[Depends(_verify_api_key)])
 def approve(merchant_id: str, body: ApproveRequest):
     """Approve a recommended action for execution.
 
@@ -182,9 +289,23 @@ def approve(merchant_id: str, body: ApproveRequest):
         )
 
     # c. MerchantApprovalGate — gate result drives execution decision
+    #
+    # Phase 1: approval gate checks execution_params supplied by the caller.
+    # Phase 2 (TODO): pull discount_pct from stored transition["action_params"]
+    # to prevent a caller from bypassing approval thresholds by submitting a
+    # lower discount_pct than the pipeline originally recommended.
+    original_discount = (transition.get("action_params") or {}).get("discount_pct")
+    submitted_discount = execution_params.get("discount_pct", 0.0)
+    if original_discount is not None and abs(float(submitted_discount) - float(original_discount)) > 0.01:
+        log.warning(
+            "[approve] discount_pct mismatch: original=%.4f submitted=%.4f transition=%s "
+            "— approval gate evaluating submitted value (Phase 1 behaviour)",
+            original_discount, submitted_discount, transition_id,
+        )
+
     action = {
         "action_id": transition["action_id"],
-        "discount_pct": execution_params.get("discount_pct", 0.0),
+        "discount_pct": submitted_discount,
         "budget_change_daily_usd": execution_params.get("budget_change_daily_usd", 0.0),
         "effort": execution_params.get("effort", ""),
         **execution_params,
@@ -236,7 +357,7 @@ def approve(merchant_id: str, body: ApproveRequest):
 
 # ── 6. POST /decision/{merchant_id}/feedback ────────────────────────
 
-@app.post("/decision/{merchant_id}/feedback")
+@app.post("/decision/{merchant_id}/feedback", dependencies=[Depends(_verify_api_key)])
 def feedback(merchant_id: str, body: FeedbackRequest):
     """Collect merchant feedback on a Decision Card."""
     _feedback_collector.record_feedback(
@@ -254,33 +375,34 @@ def feedback(merchant_id: str, body: FeedbackRequest):
 
 # ── 7. GET /merchant/{merchant_id}/health ────────────────────────────
 
-@app.get("/merchant/{merchant_id}/health")
+@app.get("/merchant/{merchant_id}/health", response_model=MerchantHealthResponse, dependencies=[Depends(_verify_api_key)])
 def merchant_health(merchant_id: str):
     """Compute fresh MerchantStateVector via MSM.
 
     Returns all 4 dimension states + urgency_scores + active_alerts.
     """
+    # Fetch previous state BEFORE compute() — MSM.compute() upserts the new
+    # state immediately, so any fetch after compute() returns the current state.
+    # Reuse prev for both signal loading and previous_msm construction.
     prev = db_client.fetch_latest_merchant_state(merchant_id)
     signals = prev.get("metrics_snapshot", {}) if prev else {}
 
-    msm_state = _msm.compute(merchant_id, signals)
-
-    # Check alerts
-    prev_raw = db_client.fetch_latest_merchant_state(merchant_id)
     previous_msm = None
-    if prev_raw:
+    if prev:
         try:
             from src.decision_engine.contracts import MerchantStateVector as MSV
             previous_msm = MSV(
-                merchant_id=prev_raw.get("merchant_id", merchant_id),
-                computed_at=prev_raw.get("computed_at", msm_state.computed_at),
-                acquisition_state=prev_raw.get("acquisition_state", "HEALTHY"),
-                conversion_state=prev_raw.get("conversion_state", "HEALTHY"),
-                retention_state=prev_raw.get("retention_state", "HEALTHY"),
-                promotion_state=prev_raw.get("promotion_state", "HEALTHY"),
+                merchant_id=prev.get("merchant_id", merchant_id),
+                computed_at=prev.get("computed_at", datetime.now(timezone.utc)),
+                acquisition_state=prev.get("acquisition_state", "HEALTHY"),
+                conversion_state=prev.get("conversion_state", "HEALTHY"),
+                retention_state=prev.get("retention_state", "HEALTHY"),
+                promotion_state=prev.get("promotion_state", "HEALTHY"),
             )
         except Exception:
             previous_msm = None
+
+    msm_state = _msm.compute(merchant_id, signals)
 
     alerts = _alert_engine.check_and_alert(merchant_id, msm_state, previous_msm)
 
@@ -299,7 +421,7 @@ def merchant_health(merchant_id: str):
 
 # ── 8. POST /decision/{merchant_id}/rollback/{token_id} ─────────────
 
-@app.post("/decision/{merchant_id}/rollback/{token_id}")
+@app.post("/decision/{merchant_id}/rollback/{token_id}", response_model=RollbackResponse, dependencies=[Depends(_verify_api_key)])
 def rollback(merchant_id: str, token_id: str):
     """Rollback a previously executed action (within 48h TTL).
 
@@ -335,4 +457,78 @@ def rollback(merchant_id: str, token_id: str):
         "merchant_id": merchant_id,
         "action_id": result.get("action_id"),
         "note": result.get("note"),
+    }
+
+
+# ── 9. POST /policy/{merchant_id} ───────────────────────────────────
+
+@app.post(
+    "/policy/{merchant_id}",
+    response_model=PolicyCreateResponse,
+    dependencies=[Depends(_verify_api_key)],
+)
+def create_or_update_policy(merchant_id: str, body: PolicyCreateRequest):
+    """Create or update a PolicyPack for a merchant.
+
+    Required fields: policy_version, vertical.
+    Optional: policy_weights (beta1/beta2/beta3 must sum to ≈ 1.0 when provided),
+    expires_at, and any additional merchant-specific fields.
+
+    Without a PolicyPack, the pipeline will RuntimeError on Step 4.
+    This endpoint is the merchant onboarding entry point for the decision engine.
+    """
+    # Validate policy_weights sum when provided
+    weights = body.policy_weights
+    if weights:
+        beta_sum = sum(weights.get(k, 0.0) for k in ("beta1", "beta2", "beta3"))
+        if beta_sum > 0 and abs(beta_sum - 1.0) > 0.05:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    f"policy_weights beta1+beta2+beta3 must sum to ≈ 1.0 "
+                    f"(got {beta_sum:.4f}, tolerance ±0.05)"
+                ),
+            )
+
+    # Build full payload — include all extra fields from the request body
+    payload = body.model_dump(exclude={"expires_at"})
+
+    db_client.upsert_policy_pack(
+        policy_version=body.policy_version,
+        merchant_id=merchant_id,
+        payload_json=payload,
+        expires_at=body.expires_at,
+    )
+
+    log.info(
+        "[policy] PolicyPack upserted for merchant=%s version=%s vertical=%s",
+        merchant_id, body.policy_version, body.vertical,
+    )
+
+    return PolicyCreateResponse(
+        status="created",
+        merchant_id=merchant_id,
+        policy_version=body.policy_version,
+        vertical=body.vertical,
+    )
+
+
+# ── 10. GET /policy/{merchant_id} ───────────────────────────────────
+
+@app.get("/policy/{merchant_id}", dependencies=[Depends(_verify_api_key)])
+def get_policy(merchant_id: str):
+    """Return the current active PolicyPack for a merchant.
+
+    Returns 404 if no non-expired PolicyPack exists.
+    Used for onboarding verification and ops troubleshooting.
+    """
+    policy = db_client.fetch_latest_policy(merchant_id)
+    if policy is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"No active PolicyPack found for merchant {merchant_id}",
+        )
+    return {
+        "merchant_id": merchant_id,
+        "policy": policy,
     }

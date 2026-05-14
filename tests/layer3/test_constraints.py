@@ -1,6 +1,6 @@
 # ── Layer 3 Tests · CPG Hard Constraints ─────────────────────────────────
 # Tests for ConstraintEngine.check_all() → PolicyDecision.
-# Covers all 6 constraints, Phase 1 missing-signal behaviour, pipeline
+# Covers all 7 constraints, Phase 1 missing-signal behaviour, pipeline
 # integration (constraints_result is real PolicyDecision, not a stub),
 # and weighted risk_penalty values.
 # ───────────────────────────────────────────────────────────────────────────
@@ -327,3 +327,100 @@ def test_pipeline_uses_real_constraints_not_stub():
         assert result.risk_penalty > 0, (
             f"Expected risk_penalty > 0 for blocked candidate, got: {result.risk_penalty}"
         )
+
+
+# ── Constraint 7: Diagnostic prerequisite ────────────────────────────────
+
+
+class TestDiagnosticPrerequisite:
+    """Constraint 7: FLOW_CHANGE / CREATIVE_CONTROL require a prior DIAGNOSTIC.
+
+    Missing signal → PASS with logged warning (Phase 1 data gap policy).
+    Prior DIAGNOSTIC within 14 days → PASS.
+    Prior DIAGNOSTIC older than 14 days → VIOLATION.
+    Non-DIAGNOSTIC last action → VIOLATION.
+    """
+
+    def test_flow_change_without_prior_diagnostic_is_violation(self, engine):
+        candidate = {
+            "action_id": "FC_001",
+            "action_type": "FLOW_CHANGE",
+            "module": "conversion",
+            "action_family": "FLOW_CHANGE",
+        }
+        signals = {
+            "last_action_type": "DISCOUNT",
+            "days_since_last_action": 3,
+            "margin_pct": 0.40,
+            "customer_orders_count": 5,
+        }
+        pd = engine.check_all(candidate, signals, _POLICY)
+        assert any("diagnostic_prerequisite" in v for v in pd.violations), (
+            f"Expected diagnostic_prerequisite violation, got: {pd.violations}"
+        )
+        assert pd.risk_penalty >= _VIOLATION_WEIGHTS["diagnostic_prerequisite"]
+
+    def test_flow_change_with_recent_diagnostic_passes(self, engine):
+        candidate = {
+            "action_id": "FC_001",
+            "action_type": "FLOW_CHANGE",
+            "module": "conversion",
+            "action_family": "FLOW_CHANGE",
+        }
+        signals = {
+            "last_action_type": "DIAGNOSTIC",
+            "days_since_last_action": 7,   # within 14-day window
+            "margin_pct": 0.40,
+            "customer_orders_count": 5,
+        }
+        pd = engine.check_all(candidate, signals, _POLICY)
+        assert not any("diagnostic_prerequisite" in v for v in pd.violations)
+
+    def test_diagnostic_expired_over_14_days_is_violation(self, engine):
+        candidate = {
+            "action_id": "FC_001",
+            "action_type": "FLOW_CHANGE",
+            "module": "conversion",
+            "action_family": "FLOW_CHANGE",
+        }
+        signals = {
+            "last_action_type": "DIAGNOSTIC",
+            "days_since_last_action": 15,   # expired
+            "margin_pct": 0.40,
+            "customer_orders_count": 5,
+        }
+        pd = engine.check_all(candidate, signals, _POLICY)
+        assert any("diagnostic_prerequisite" in v for v in pd.violations)
+
+    def test_missing_last_action_type_passes_with_warning(self, engine, caplog):
+        candidate = {
+            "action_id": "CC_001",
+            "action_type": "CREATIVE_CONTROL",
+            "module": "acquisition",
+            "action_family": "CREATIVE_CONTROL",
+        }
+        signals = {
+            "margin_pct": 0.40,
+            "customer_orders_count": 5,
+            # last_action_type intentionally absent — Phase 1 data gap
+        }
+        with caplog.at_level(logging.WARNING):
+            pd = engine.check_all(candidate, signals, _POLICY)
+        assert not any("diagnostic_prerequisite" in v for v in pd.violations)
+        assert "Phase 1 data gap" in caplog.text
+
+    def test_non_execution_action_type_skips_check(self, engine):
+        """REMINDER action_type must not trigger diagnostic prerequisite check."""
+        candidate = {
+            "action_id": "R_001",
+            "action_type": "REMINDER",
+            "module": "retention",
+            "action_family": "REMINDER",
+        }
+        signals = {
+            "margin_pct": 0.40,
+            "customer_orders_count": 5,
+            "last_action_type": "DISCOUNT",   # no prior diagnostic — irrelevant for REMINDER
+        }
+        pd = engine.check_all(candidate, signals, _POLICY)
+        assert not any("diagnostic_prerequisite" in v for v in pd.violations)

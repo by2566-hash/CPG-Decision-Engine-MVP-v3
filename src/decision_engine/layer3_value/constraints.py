@@ -2,13 +2,14 @@
 # Non-negotiable constraints. CANNOT be overridden by LLM or ML outputs.
 # CANNOT be relaxed by any Policy Pack configuration.
 #
-# 6 CPG Hard Constraints:
+# 7 CPG Hard Constraints:
 #   1. Margin floor          — post-discount margin >= 0.15 always
 #   2. Discount = last resort — REMINDER must precede DISCOUNT
 #   3. Incrementality required — no discount without uplift attribution
 #   4. Cold prospect gate    — no discount to first-time visitors
 #   5. Attribution windows   — Retention 7d / Acquisition 30d / Promotion 14d / Conversion 0d
 #   6. Inventory gate        — no discount when inventory_days_p10 < 5
+#   7. Diagnostic prerequisite — DIAGNOSTIC must precede FLOW_CHANGE / CREATIVE_CONTROL
 #
 # compute_risk_score() feeds the β3·Risk(Constraints) term in:
 #   Score = β1·U_base + β2·U_ucb − β3·Risk(Constraints)
@@ -36,7 +37,12 @@ _VIOLATION_WEIGHTS: dict[str, float] = {
     "incrementality": 2.0,          # ROI validity — discount without uplift is waste
     "discount_last_resort": 1.5,    # process constraint — REMINDER must precede DISCOUNT
     "cold_prospect_gate": 1.5,      # targeting constraint — no discount to strangers
+    "diagnostic_prerequisite": 1.5, # ordering constraint — DIAGNOSTIC before FLOW_CHANGE/CREATIVE_CONTROL
 }
+
+# Action types that require a prior DIAGNOSTIC action before being recommended.
+# Prevents execution actions from scoring above their paired diagnostic in cold-start.
+_EXECUTION_ACTION_TYPES = frozenset({"FLOW_CHANGE", "CREATIVE_CONTROL"})
 
 # Post-discount margin floor — CPG absolute minimum (CLAUDE.md)
 _MARGIN_FLOOR = 0.15
@@ -137,6 +143,12 @@ class ConstraintEngine:
 
         # 6. Inventory gate
         v = self._check_inventory_gate(candidate, signals)
+        if v:
+            violations.append(v)
+
+        # 7. Diagnostic prerequisite — FLOW_CHANGE / CREATIVE_CONTROL actions
+        #    require a prior DIAGNOSTIC recommendation for the same module.
+        v = self._check_diagnostic_prerequisite(candidate, signals)
         if v:
             violations.append(v)
 
@@ -295,6 +307,43 @@ class ConstraintEngine:
             return f"inventory_gate:inventory_days_p10_{inv_days:.1f}_below_5"
 
         return None
+
+    def _check_diagnostic_prerequisite(self, candidate: dict, signals: dict) -> str | None:
+        """Constraint 7: FLOW_CHANGE and CREATIVE_CONTROL actions require a prior DIAGNOSTIC.
+
+        Prevents execution actions from being recommended before their paired diagnostic
+        has been run — mirrors the discount_last_resort pattern (REMINDER before DISCOUNT).
+
+        Checks signals["last_action_type"] and signals["days_since_last_action"].
+        Missing signal → PASS with warning (Phase 1: signal pipeline incomplete).
+        """
+        action_type = candidate.get("action_type", "")
+        if action_type not in _EXECUTION_ACTION_TYPES:
+            return None
+
+        last_action_type = signals.get("last_action_type")
+        if last_action_type is None:
+            log.warning(
+                "WARNING: constraint diagnostic_prerequisite skipped"
+                " — signal last_action_type not available (Phase 1 data gap)"
+            )
+            return None
+
+        if last_action_type.upper() == "DIAGNOSTIC":
+            days = signals.get("days_since_last_action")
+            # Within 14-day window, prior diagnostic is valid
+            if days is None or float(days) <= 14:
+                return None
+
+        log.warning(
+            "[constraints] Diagnostic prerequisite violated: action_type=%s"
+            " but last_action_type=%s (days_since=%s). A DIAGNOSTIC should"
+            " precede FLOW_CHANGE or CREATIVE_CONTROL actions.",
+            action_type,
+            last_action_type,
+            signals.get("days_since_last_action"),
+        )
+        return f"diagnostic_prerequisite:{action_type}_without_prior_diagnostic"
 
     # ── Public helpers ────────────────────────────────────────────────────
 

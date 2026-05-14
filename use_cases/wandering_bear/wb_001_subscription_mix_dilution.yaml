@@ -44,9 +44,10 @@ root_cause_confirmed: mix_problem
 
 counterfactual: >
   Without this diagnosis, the team would have interpreted the 14.7% sub rate
-  as a universal funnel failure and redesigned the sitewide subscription
-  experience — a costly action with no impact on the actual root cause (PM SKU
-  dominance). Sub rates would have remained suppressed post-redesign.
+  as a universal funnel failure or a channel mix breakdown, and redesigned the
+  sitewide subscription experience — a costly action with no impact on the actual
+  root cause (PM SKU dominance). Sub rates would have remained suppressed
+  post-redesign regardless of the funnel changes made. [Shaungh 2026-04-16]
 
 outcome_value: >
   Correctly identified mix dilution as root cause. No sitewide redesign required.

@@ -17,7 +17,7 @@ calibration_value_for:
       dr_cpa_after: 38.00
       dr_cpa_improvement_pct: 0.118          # 11.8%
       dr_budget_fraction_of_total: 0.59      # DR spend / total spend
-      effective_gmv_lift: 0.07
+      gmv_lift_estimate: 0.07
       derivation_note: >
         DR CPA improved -11.8% ($43.09 → $38.00) despite blended CPA worsening.
         DR accounts for ~59% of total budget (87k / 147k).

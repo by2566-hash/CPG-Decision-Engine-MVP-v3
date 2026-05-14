@@ -1,0 +1,41 @@
+# ── Brand Binding: Consumer Brand A × conversion_compliance_friction ──────────
+# Layer 2 (brand-level) [ADR-0011]
+# RULE: No raw evidence data here. Evidence lives in use_cases/consumer_brand_a/.
+# ─────────────────────────────────────────────────────────────────────────────
+
+brand: consumer_brand_a
+meta_pattern_ref: conversion_compliance_friction
+binding_version: "1.0"
+
+entity_bindings:
+  primary_conversion_flow: personalized_quiz  # health data → product recommendation
+  compliance_trigger_type: health_data_consent_popup
+  popup_placement: quiz_entry                  # blocked access to primary conversion flow
+  copy_issue: clinical_language_no_ux_testing  # "clinical and implemented without UX testing"
+  traffic_routing: utm_paid_into_quiz_flow     # paid traffic was routed into same quiz flow
+
+thresholds:
+  cvr_collapse_threshold: 0.50    # CVR drop >50% vs baseline → CRITICAL confirmed
+  recent_change_window_days: 7    # site/flow/legal changes within 7 days → recent change flag
+  calibration_status: partner_prior
+
+action_utility_priors:
+  AUDIT_RECENT_CHANGES:
+    gmv_lift_prior: 0.03
+    confidence: 0.50
+    calibration_status: partner_prior
+    evidence_case: "cba_002"
+
+  REMOVE_COMPLIANCE_FRICTION:
+    # Full derivation: see use_cases/consumer_brand_a/cba_002_compliance_ux.yaml
+    gmv_lift_prior: 0.12
+    estimated: true
+    confidence: 0.75             # high: specific CVR before/after numbers confirmed, outcome confirmed
+    calibration_status: partner_prior
+    evidence_case: "cba_002"
+
+evidence_refs_template:
+  - "Checkout CVR current: ${metrics.cvr_7d} vs 30d baseline: ${metrics.cvr_30d}"
+  - "CVR drop onset: ${metrics.cvr_collapse_date} vs last deploy: ${metrics.last_deploy_date}"
+  - "Cross-source: paid CVR drop ${metrics.paid_cvr_drop}, organic CVR drop ${metrics.organic_cvr_drop}"
+  - "Friction element identified: ${metrics.friction_element_confirmed}"

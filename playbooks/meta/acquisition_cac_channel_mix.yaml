@@ -46,19 +46,22 @@ analysis_path:
     output_metric: onplatform_content_view_wow_delta
     signal_to_watch: meta_content_views_spike
 
-  - step: compare_destination_cvr
-    description: "Compare conversion rate: website destination vs on-platform destinations"
-    decision_gate: "onplatform_cvr_ratio < ${thresholds.destination_cvr_gap_threshold}"
-    output_metric: onplatform_cvr_ratio
+  - step: compare_destination_cpp
+    description: >
+      Compare Cost Per Purchase (CPP) between website destination and on-platform destinations.
+      CPP captures CPM and CPC differentials that CVR alone misses — use CPP, not CVR.
+    decision_gate: "onplatform_cpp_ratio > ${thresholds.destination_cpp_gap_threshold}"
+    output_metric: onplatform_cpp_ratio
 
 root_cause_type: channel_routing
 
 actions:
-  - id: PAUSE_CHANNEL
+  - id: FIX_DESTINATION_ROUTING
     type: CHANNEL_CONTROL
     description: >
-      Disable on-platform destination(s) and route all traffic to website
-      conversion paths. Do not pause the channel — only the destination.
+      Disable on-platform destination setting(s) (e.g. IG Shop, FB Shop) and route
+      all traffic to website conversion paths. This is a destination routing change,
+      NOT a channel pause — the channel (Meta) stays on. Only the destination is changed.
     expected_utility_basis:
       business_logic: >
         On-platform destinations convert materially worse than website paths
@@ -94,6 +97,6 @@ constraints:
   applies_hard_constraints: []  # CHANNEL_CONTROL does not trigger discount constraints
 
 partner_clarifications_needed:
-  - "At what on-platform CVR gap (vs website) does this become actionable?"
+  - "[ANSWERED 2026-04-16] On-platform CPP > website × 1.20 is the actionable routing threshold. CPP preferred over CVR — factors in CPM/CPC differentials."
   - "Is this pattern only for Meta, or does it apply to TikTok / Pinterest shop?"
   - "What is the typical time-to-recover after removing on-platform destinations?"
