@@ -9,6 +9,18 @@ module: conversion
 observed_at: "2023-Q1"
 evidence_quality: high
 
+source_alignment:
+  source_batch: use_case_library_final
+  source_case_id: FP-002
+  source_path: partner_drafts/kg_partner/use_case_library_final/use_case_library_final.md
+  source_line: 1510
+  alignment_status: exact_match
+  checked_at: "2026-06-01"
+  notes: >
+    FINAL source confirms ShopCash as a structurally non-subscribable order
+    source and confirms the denominator-fix action. No runtime behavior or
+    utility prior changed in Phase 1 alignment.
+
 calibration_value_for:
   - action_id: FIX_DENOMINATOR
     gmv_lift_derivation:

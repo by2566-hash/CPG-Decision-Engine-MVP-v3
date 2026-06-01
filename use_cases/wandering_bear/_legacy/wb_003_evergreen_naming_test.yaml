@@ -24,6 +24,18 @@ module: conversion
 observed_at: "2023-Q1"
 evidence_quality: high
 
+source_alignment:
+  source_batch: use_case_library_final
+  source_case_id: FP-003
+  source_path: partner_drafts/kg_partner/use_case_library_final/use_case_library_final.md
+  source_line: 1560
+  alignment_status: exact_match_legacy
+  checked_at: "2026-06-01"
+  notes: >
+    FINAL source confirms the evergreen ATC mix readout, arm-level CPA/CVR/AOV,
+    PLTV ROAS, and variant-level caveats. Legacy status is unchanged because
+    this file still references a Phase 1 stub playbook.
+
 calibration_value_for:
   - action_id: REORDER_SHELF
     gmv_lift_derivation:

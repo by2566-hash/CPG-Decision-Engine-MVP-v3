@@ -10,6 +10,18 @@ module: acquisition
 observed_at: "2023-04"
 evidence_quality: high
 
+source_alignment:
+  source_batch: use_case_library_final
+  source_case_id: FP-005
+  source_path: partner_drafts/kg_partner/use_case_library_final/use_case_library_final.md
+  source_line: 1663
+  alignment_status: exact_match
+  checked_at: "2026-06-01"
+  notes: >
+    FINAL source confirms Meta IG/FB Shop destination routing as root cause
+    and confirms the March-to-April CAC recovery. No runtime behavior or
+    utility prior changed in Phase 1 alignment.
+
 calibration_value_for:
   - action_id: FIX_DESTINATION_ROUTING
     gmv_lift_derivation:
