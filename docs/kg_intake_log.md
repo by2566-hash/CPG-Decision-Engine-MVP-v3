@@ -32,6 +32,9 @@ translation status, and open questions. Updated at intake start and intake end.
   non-source triage copy)
 - `docs/kg_translation_audits/use_case_library_final/SOURCE_MANIFEST.md`
   (tracked provenance manifest; raw source remains gitignored)
+- `docs/kg_translation_triage/2026-06-01-brand-source-reconciliation.md`
+  (tracked reconciliation of six brand-level source files to `FP-007` through
+  `FP-032`)
 
 ### Classification summary
 

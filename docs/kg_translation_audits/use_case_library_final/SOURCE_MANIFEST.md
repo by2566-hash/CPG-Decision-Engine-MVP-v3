@@ -23,6 +23,14 @@ partner-sensitive business material. Do not copy raw source text or raw observed
 metrics into runtime YAML, Layer 2 brand bindings, or public artifacts without
 explicit partner approval.
 
+## Supporting Brand Source Batch
+
+The six-file brand source batch archived under
+`partner_drafts/kg_partner/brand_source_batch_2026_06_01/` provides supporting
+or primary source evidence for `FP-007` through `FP-032`. The tracked manifest is
+`docs/kg_translation_audits/brand_source_batch_2026_06_01/SOURCE_MANIFEST.md`.
+This does not change runtime readiness.
+
 ## Source Files
 
 | File | Size bytes | SHA-256 | Git status |

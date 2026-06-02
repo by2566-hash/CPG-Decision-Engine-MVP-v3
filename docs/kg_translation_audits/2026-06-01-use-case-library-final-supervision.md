@@ -117,5 +117,6 @@ Residual risks:
 | `docs/kg_translation_triage/2026-06-01-source-coverage-ledger.md` | 55-case coverage ledger |
 | `docs/kg_translation_audits/PROMOTION_PACKET_TEMPLATE.md` | Per-case promotion packet template |
 | `docs/kg_translation_audits/use_case_library_final/SOURCE_MANIFEST.md` | Tracked source provenance manifest with raw-source hashes |
+| `docs/kg_translation_triage/2026-06-01-brand-source-reconciliation.md` | Maps six brand-level DOCX files to existing `FP-007` through `FP-032` cases |
 | `docs/kg_translation_triage/2026-06-01-use-case-library-final.md` | Main triage and promotion order |
 | `docs/kg_intake_log.md` | Intake status and classification summary |
