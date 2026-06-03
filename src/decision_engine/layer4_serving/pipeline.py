@@ -11,7 +11,6 @@
 # ───────────────────────────────────────────────────────────────────────────
 from __future__ import annotations
 
-import json
 import logging
 import re as _re_module
 from datetime import datetime, timezone
@@ -52,6 +51,12 @@ _feature_builder = FeatureBuilder()
 
 # Dimension → module mapping
 _DIMENSIONS = ["acquisition", "conversion", "retention", "promotion"]
+_POLICY_WEIGHT_KEYS = (
+    "gmv_lift",
+    "margin_lift",
+    "inventory_risk_reduction",
+    "retention_lift",
+)
 
 
 def run_once(
@@ -115,6 +120,7 @@ def run_once(
                     f"and no LKG fallback found"
                 )
         policy_version = policy.get("policy_version", "unknown")
+        policy = _apply_policy_weight_overrides(policy, signals)
 
         # ── Step 5: Load candidates from KG Playbooks ────────────────
         candidates = _generate_candidates(msm_state, signals, policy, merchant_id)
@@ -437,6 +443,44 @@ def _lkg_policy() -> dict | None:
         "beta2": settings.beta2,
         "beta3": settings.beta3,
     }
+
+
+def _apply_policy_weight_overrides(policy: dict, signals: dict) -> dict:
+    overrides = signals.get("policy_weight_overrides") if isinstance(signals, dict) else None
+    if not isinstance(overrides, dict):
+        return policy
+
+    missing = set(_POLICY_WEIGHT_KEYS) - set(overrides)
+    extra = set(overrides) - set(_POLICY_WEIGHT_KEYS)
+    if missing or extra:
+        raise ValueError(
+            "policy_weight_overrides must contain exactly "
+            "gmv_lift, margin_lift, inventory_risk_reduction, retention_lift"
+        )
+
+    weights: dict[str, float] = {}
+    for key in _POLICY_WEIGHT_KEYS:
+        value = overrides[key]
+        if isinstance(value, bool):
+            raise ValueError(f"policy_weight_overrides.{key} must be numeric")
+        try:
+            numeric_value = float(value)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"policy_weight_overrides.{key} must be numeric") from exc
+        if numeric_value < 0:
+            raise ValueError(f"policy_weight_overrides.{key} must be non-negative")
+        weights[key] = numeric_value
+
+    total = sum(weights.values())
+    if total <= 0:
+        raise ValueError("policy_weight_overrides must sum to a positive value")
+    if abs(total - 1.0) > 1e-6:
+        weights = {key: value / total for key, value in weights.items()}
+
+    updated_policy = dict(policy)
+    updated_policy["policy_weights"] = weights
+    updated_policy["policy_weight_source"] = "frontend_objective_weights"
+    return updated_policy
 
 
 def _generate_candidates(
@@ -807,5 +851,3 @@ def _parse_msm(raw: dict) -> MerchantStateVector | None:
         )
     except Exception:
         return None
-
-

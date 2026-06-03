@@ -18,6 +18,7 @@ import json
 import logging
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
+from decimal import Decimal
 from typing import Any, Dict, List, Optional
 
 import sqlalchemy as sa
@@ -341,6 +342,81 @@ def fetch_latest_merchant_state(merchant_id: str) -> dict | None:
         if isinstance(d.get("metrics_snapshot"), str):
             d["metrics_snapshot"] = json.loads(d["metrics_snapshot"])
         return d
+
+
+def _parse_json_mapping(value: Any) -> dict[str, Any]:
+    if value is None:
+        return {}
+    if isinstance(value, str):
+        return json.loads(value) if value else {}
+    return dict(value)
+
+
+def _json_scalar(value: Any) -> Any:
+    if isinstance(value, Decimal):
+        return float(value)
+    return value
+
+
+def fetch_latest_partner_signal_snapshot(user_id: str) -> dict | None:
+    """Return latest partner signal data for a frontend user_id.
+
+    Partner schema currently exposes user_id, not merchant_id. Day-1 runtime
+    maps user_id directly to merchant_id at the API/adapter boundary.
+    """
+    with _conn() as c:
+        health_row = c.execute(
+            text("""
+                SELECT user_id, metric_snapshot, calculated_at
+                FROM decision_health_score
+                WHERE user_id = :uid
+                ORDER BY calculated_at DESC
+                LIMIT 1
+            """),
+            dict(uid=user_id),
+        ).fetchone()
+
+        signals: dict[str, Any] = {}
+        calculated_at = None
+        if health_row is not None:
+            health = dict(health_row._mapping)
+            signals.update(_parse_json_mapping(health.get("metric_snapshot")))
+            calculated_at = health.get("calculated_at")
+
+        metric_rows = c.execute(
+            text("""
+                SELECT metric_name, metric_value, metric_unit, dimension,
+                       metric_date, metadata_json
+                FROM decision_metric_value
+                WHERE user_id = :uid
+                ORDER BY metric_date DESC
+            """),
+            dict(uid=user_id),
+        ).fetchall()
+
+        seen_metric_names: set[str] = set()
+        for row in metric_rows:
+            metric = dict(row._mapping)
+            metric_name = metric.get("metric_name")
+            if not metric_name or metric_name in seen_metric_names:
+                continue
+            seen_metric_names.add(metric_name)
+            signals[str(metric_name)] = _json_scalar(metric.get("metric_value"))
+
+        if not signals:
+            return None
+
+        merchant_id = str(signals.get("merchant_id") or user_id)
+        brand_id = str(signals.get("brand_id") or signals.get("brand") or merchant_id)
+
+        return {
+            "user_id": user_id,
+            "merchant_id": merchant_id,
+            "brand_id": brand_id,
+            "signals": signals,
+            "data_source": "decision_health_score+decision_metric_value",
+            "calculated_at": calculated_at,
+        }
 
 
 def fetch_wsm_for_billing(
