@@ -209,6 +209,85 @@ def test_load_partner_decision_signals_falls_back_to_silver_ads(db_engine):
     assert loaded.signals["partner_ads_latest_date"] == "2026-06-03"
 
 
+def test_load_partner_decision_signals_merges_health_metric_arrays_with_silver_ads(db_engine):
+    _create_partner_signal_tables(db_engine)
+    now = datetime.now(timezone.utc)
+    with db_engine.begin() as conn:
+        conn.execute(
+            sa.text(
+                """
+                INSERT INTO decision_health_score
+                    (user_id, metric_snapshot, calculated_at)
+                VALUES
+                    (:uid, :acquisition_snapshot, :calculated_at),
+                    (:uid, :conversion_snapshot, :calculated_at)
+                """
+            ),
+            {
+                "uid": "100",
+                "acquisition_snapshot": json.dumps(
+                    [
+                        {
+                            "platform": "google_ads",
+                            "metric_name": "cac",
+                            "dimension": "ACQUISITION",
+                            "value": 58.4192,
+                            "metric_date": "2026-05-27",
+                            "user_id": 100,
+                        },
+                        {
+                            "platform": "google_ads",
+                            "metric_name": "clicks",
+                            "dimension": "ACQUISITION",
+                            "value": 1266.0,
+                            "metric_date": "2026-05-27",
+                            "user_id": 100,
+                        },
+                    ]
+                ),
+                "conversion_snapshot": json.dumps(
+                    [
+                        {
+                            "platform": "shopify",
+                            "metric_name": "orders_count",
+                            "dimension": "CONVERSION",
+                            "value": 9.0,
+                            "metric_date": "2026-05-27",
+                            "user_id": 100,
+                        }
+                    ]
+                ),
+                "calculated_at": now,
+            },
+        )
+        conn.execute(
+            sa.text(
+                """
+                INSERT INTO decision_silver_meta_ads
+                    (user_id, date, campaign_name, spend, impressions, clicks,
+                     conversions, conversion_value, created_at, tenant_id)
+                VALUES
+                    (:uid, '2026-06-03', 'Meta Prospecting', 100, 1000, 50,
+                     10, 400, :created_at, 1),
+                    (:uid, '2026-06-02', 'Meta Prospecting', 60, 600, 30,
+                     6, 240, :created_at, 1)
+                """
+            ),
+            {"uid": "100", "created_at": now},
+        )
+
+    loaded = load_partner_decision_signals("100")
+
+    assert loaded.data_source == (
+        "decision_health_score+decision_silver_meta_ads"
+    )
+    assert loaded.signals["cac"] == pytest.approx(58.4192)
+    assert loaded.signals["clicks"] == pytest.approx(1266.0)
+    assert loaded.signals["orders_count"] == pytest.approx(9.0)
+    assert loaded.signals["cac_7d"] == pytest.approx(10.0)
+    assert loaded.signals["roas_7d"] == pytest.approx(4.0)
+
+
 def test_load_partner_decision_signals_marks_unavailable_roas_for_meta_only(db_engine):
     _create_partner_signal_tables(db_engine)
     now = datetime.now(timezone.utc)
