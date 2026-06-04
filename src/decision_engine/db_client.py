@@ -34,6 +34,12 @@ _PARTNER_ADS_TABLES = (
     "decision_silver_google_ads",
     "decision_silver_meta_ads",
 )
+_PARTNER_ACQUISITION_SIGNAL_KEYS = (
+    "cac_7d",
+    "cac_baseline_30d",
+    "roas_7d",
+    "roas_baseline_30d",
+)
 
 
 def _get_engine() -> sa.Engine:
@@ -348,18 +354,35 @@ def fetch_latest_merchant_state(merchant_id: str) -> dict | None:
         return d
 
 
-def _parse_json_mapping(value: Any) -> dict[str, Any]:
-    if value is None:
-        return {}
-    if isinstance(value, str):
-        return json.loads(value) if value else {}
-    return dict(value)
-
-
 def _json_scalar(value: Any) -> Any:
     if isinstance(value, Decimal):
         return float(value)
     return value
+
+
+def _parse_json_mapping(value: Any) -> dict[str, Any]:
+    if value is None:
+        return {}
+    parsed = json.loads(value) if isinstance(value, str) and value else value
+    if not parsed:
+        return {}
+    if isinstance(parsed, dict):
+        return dict(parsed)
+    if isinstance(parsed, list):
+        signals: dict[str, Any] = {}
+        for item in parsed:
+            if isinstance(item, dict):
+                metric_name = item.get("metric_name")
+                if not metric_name:
+                    continue
+                signals[str(metric_name)] = _json_scalar(
+                    item.get("value", item.get("metric_value"))
+                )
+            elif isinstance(item, (list, tuple)) and len(item) == 2:
+                signals[str(item[0])] = _json_scalar(item[1])
+        return signals
+    log.warning("Unsupported partner metric_snapshot payload type: %s", type(parsed))
+    return {}
 
 
 def _coerce_date(value: Any) -> date:
@@ -535,6 +558,10 @@ def _fetch_partner_ads_signal_snapshot(
     )
 
 
+def _has_partner_acquisition_signals(signals: dict[str, Any]) -> bool:
+    return all(signals.get(key) is not None for key in _PARTNER_ACQUISITION_SIGNAL_KEYS)
+
+
 def fetch_latest_partner_signal_snapshot(user_id: str) -> dict | None:
     """Return latest partner signal data for a frontend user_id.
 
@@ -542,34 +569,44 @@ def fetch_latest_partner_signal_snapshot(user_id: str) -> dict | None:
     maps user_id directly to merchant_id at the API/adapter boundary.
     """
     with _conn() as c:
-        health_row = c.execute(
+        health_rows = c.execute(
             text("""
                 SELECT user_id, metric_snapshot, calculated_at
                 FROM decision_health_score
-                WHERE user_id = :uid
+                WHERE CAST(user_id AS TEXT) = :uid
+                  AND calculated_at = (
+                      SELECT MAX(calculated_at)
+                      FROM decision_health_score
+                      WHERE CAST(user_id AS TEXT) = :uid
+                  )
                 ORDER BY calculated_at DESC
-                LIMIT 1
             """),
             dict(uid=user_id),
-        ).fetchone()
+        ).fetchall()
 
         signals: dict[str, Any] = {}
         calculated_at = None
-        if health_row is not None:
-            health = dict(health_row._mapping)
+        source_parts: list[str] = []
+        if health_rows:
+            source_parts.append("decision_health_score")
+
+        for row in health_rows:
+            health = dict(row._mapping)
             signals.update(_parse_json_mapping(health.get("metric_snapshot")))
-            calculated_at = health.get("calculated_at")
+            calculated_at = calculated_at or health.get("calculated_at")
 
         metric_rows = c.execute(
             text("""
                 SELECT metric_name, metric_value, metric_unit, dimension,
                        metric_date, metadata_json
                 FROM decision_metric_value
-                WHERE user_id = :uid
+                WHERE CAST(user_id AS TEXT) = :uid
                 ORDER BY metric_date DESC
             """),
             dict(uid=user_id),
         ).fetchall()
+        if metric_rows:
+            source_parts.append("decision_metric_value")
 
         seen_metric_names: set[str] = set()
         for row in metric_rows:
@@ -580,8 +617,19 @@ def fetch_latest_partner_signal_snapshot(user_id: str) -> dict | None:
             seen_metric_names.add(metric_name)
             signals[str(metric_name)] = _json_scalar(metric.get("metric_value"))
 
+        ads_state = None
+        if not _has_partner_acquisition_signals(signals):
+            ads_state = _fetch_partner_ads_signal_snapshot(c, user_id)
+            if ads_state:
+                ads_source = str(ads_state["data_source"]).split("+")
+                source_parts.extend(
+                    source for source in ads_source if source not in source_parts
+                )
+                signals = {**ads_state["signals"], **signals}
+                calculated_at = calculated_at or ads_state.get("calculated_at")
+
         if not signals:
-            return _fetch_partner_ads_signal_snapshot(c, user_id)
+            return ads_state
 
         merchant_id = str(signals.get("merchant_id") or user_id)
         brand_id = str(signals.get("brand_id") or signals.get("brand") or merchant_id)
@@ -591,7 +639,7 @@ def fetch_latest_partner_signal_snapshot(user_id: str) -> dict | None:
             "merchant_id": merchant_id,
             "brand_id": brand_id,
             "signals": signals,
-            "data_source": "decision_health_score+decision_metric_value",
+            "data_source": "+".join(source_parts) if source_parts else "unknown",
             "calculated_at": calculated_at,
         }
 
