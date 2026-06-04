@@ -14,11 +14,17 @@ from datetime import datetime, timezone
 from typing import Any, Optional
 
 from fastapi import Depends, FastAPI, HTTPException, Security
+from fastapi.encoders import jsonable_encoder
 from fastapi.security.api_key import APIKeyHeader
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, model_validator
 
 from src.decision_engine import db_client
 from src.decision_engine.config import settings
+from src.decision_engine.layer0_data.partner_signal_adapter import (
+    PartnerSignalNotFound,
+    load_partner_decision_signals,
+    normalize_frontend_objective_weights,
+)
 from src.decision_engine.layer1_msm.merchant_state_machine import MerchantStateMachine
 from src.decision_engine.layer1_msm.alert_engine import AlertEngine
 from src.decision_engine.layer4_serving import rollout
@@ -26,7 +32,7 @@ from src.decision_engine.layer4_serving.fast_plane import FastPlane
 from src.decision_engine.layer4_serving.pipeline import run_once
 from src.decision_engine.layer3_value.feedback_collector import FeedbackCollector
 from src.decision_engine.layer3_value.rollback_registry import RollbackRegistry
-from src.decision_engine.layer3_value.merchant_approval_gate import MerchantApprovalGate, ApprovalCheckResult
+from src.decision_engine.layer3_value.merchant_approval_gate import MerchantApprovalGate
 
 log = logging.getLogger(__name__)
 
@@ -168,6 +174,184 @@ class DecisionResponse(BaseModel):
     top_actions: list[dict[str, Any]]
 
 
+class PartnerDecisionRequest(BaseModel):
+    user_id: str
+    brand_id: Optional[str] = None
+    growth: float = Field(ge=0, le=100)
+    margin: float = Field(ge=0, le=100)
+    inventory: float = Field(ge=0, le=100)
+    retention: float = Field(ge=0, le=100)
+
+    @model_validator(mode="after")
+    def _positive_weight_sum(self) -> "PartnerDecisionRequest":
+        if self.growth + self.margin + self.inventory + self.retention <= 0:
+            raise ValueError("objective weights must sum to a positive value")
+        return self
+
+
+class PartnerDecisionResponse(BaseModel):
+    user_id: str
+    merchant_id: str
+    brand_id: str
+    mode: str
+    policy_version: str
+    msm_state: dict[str, str]
+    alerts: list[str]
+    data_source: str
+    applied_objective_weights: dict[str, float]
+    recommendations: list[dict[str, Any]]
+
+
+def _json_safe_mapping(value: Any) -> dict[str, Any]:
+    if hasattr(value, "model_dump"):
+        return value.model_dump(mode="json")
+    return jsonable_encoder(value)
+
+
+def _format_money(value: Any) -> str:
+    if not isinstance(value, (int, float)):
+        return "TBD"
+    sign = "+" if value >= 0 else "-"
+    return f"{sign}${abs(value):,.0f}/mo"
+
+
+def _format_confidence(value: Any) -> int:
+    if not isinstance(value, (int, float)):
+        return 0
+    return round(value * 100) if value <= 1 else round(value)
+
+
+def _format_score(value: Any) -> float:
+    if not isinstance(value, (int, float)):
+        return 0.0
+    return round(max(0.0, min(1.0, float(value))), 2)
+
+
+def _policy_gates_from_card(
+    payload: dict[str, Any],
+    constraints_passed: bool,
+    violations: list[Any],
+) -> list[dict[str, str]]:
+    gates = [
+        {
+            "id": "constraints",
+            "name": "Decision constraints",
+            "status": "pass" if constraints_passed else "block",
+            "detail": "All constraints passed."
+            if constraints_passed
+            else "; ".join(str(v) for v in violations),
+        }
+    ]
+    verification_chain = payload.get("verification_chain") or {}
+    for key, step in verification_chain.items():
+        if key == "all_passed" or not isinstance(step, dict):
+            continue
+        gates.append(
+            {
+                "id": str(key),
+                "name": str(step.get("name") or key.replace("_", " ").title()),
+                "status": "pass" if step.get("passed") else "block",
+                "detail": str(step.get("reason") or ""),
+            }
+        )
+    return gates
+
+
+def _decision_card_to_frontend_recommendation(
+    card: Any,
+    merchant_id: str,
+    brand_id: str,
+) -> dict[str, Any]:
+    payload = _json_safe_mapping(card)
+    merchant_copy = payload.get("merchant_copy") or {}
+    impact = payload.get("impact_estimate") or {}
+    constraints_passed = bool(payload.get("constraints_passed", True))
+    violations = payload.get("violations") or []
+    action_id = payload.get("action_id") or payload.get("recommended_action") or ""
+    title = payload.get("pattern_detected") or action_id or "Decision recommendation"
+    recommendation = merchant_copy.get("recommendation") or action_id or title
+    diagnosis = merchant_copy.get("diagnosis") or payload.get("diagnosis") or ""
+    expected_impact = impact.get("expected")
+    confidence = _format_confidence(impact.get("confidence"))
+    score = _format_score(payload.get("final_score") or payload.get("quality_score"))
+    module = str(payload.get("module") or "decision").title()
+    why_now = (
+        merchant_copy.get("impact_narrative")
+        or diagnosis
+        or "The engine ranked this action highest under the current merchant state."
+    )
+    evidence = payload.get("evidence") or []
+    evidence_items = [
+        {
+            "id": f"ev-{idx}",
+            "category": module,
+            "title": str(item),
+            "detail": str(item),
+            "confidence": confidence,
+        }
+        for idx, item in enumerate(evidence[:3], start=1)
+    ] or [
+        {
+            "id": "ev-1",
+            "category": module,
+            "title": title,
+            "detail": diagnosis or why_now,
+            "confidence": confidence,
+        }
+    ]
+
+    return {
+        "id": payload.get("card_id") or action_id,
+        "title": title,
+        "module": module,
+        "brand": brand_id,
+        "priority": "Best next decision",
+        "revenueImpact": _format_money(expected_impact),
+        "marginImpact": "Monitor margin impact",
+        "confidence": confidence,
+        "decisionScore": score,
+        "recommendation": recommendation,
+        "whyNow": why_now,
+        "actions": [recommendation],
+        "policyGates": _policy_gates_from_card(payload, constraints_passed, violations),
+        "trace": {
+            "id": "decision-card",
+            "label": "Decision card",
+            "metric": f"{score:.2f}",
+            "detail": why_now,
+            "type": "score",
+            "evidence": [item["title"] for item in evidence_items],
+            "technical": "Mapped from V3 DecisionCard JSON at the partner API boundary.",
+            "children": [],
+        },
+        "diagnosis": diagnosis,
+        "primaryBottleneck": {
+            "title": title,
+            "detail": diagnosis or why_now,
+        },
+        "firstAction": recommendation,
+        "estimatedUpside": _format_money(expected_impact),
+        "evidence": evidence_items,
+        "decisionRisk": {
+            "prevented": "Avoid acting outside the ranked V3 decision path.",
+            "resourceSaved": "Keeps review focused on the highest-ranked action.",
+            "upside": _format_money(expected_impact),
+        },
+        "funnel": [],
+        "funnelInsight": diagnosis or why_now,
+        "whatLooksHealthy": [],
+        "actionsPlan": [
+            {
+                "priority": "High",
+                "title": recommendation,
+                "detail": why_now,
+                "owner": "Merchant operator",
+            }
+        ],
+        "doNotChangeYet": [],
+    }
+
+
 # ── 1. GET /health ──────────────────────────────────────────────────
 
 @app.get("/health", response_model=HealthResponse)
@@ -222,11 +406,74 @@ def decision(merchant_id: str):
         "alerts": policy_pack.get("alerts", []),
         "policy_version": policy_pack.get("policy_version", "unknown"),
         "weekly_plan": policy_pack.get("weekly_plan", {}),
-        "top_actions": ranked[:3],
+        "top_actions": [_json_safe_mapping(card) for card in ranked[:3]],
     }
 
 
-# ── 4. POST /decision/{merchant_id}/emergency ──────────────────────
+# ── 4. POST /partner/decision-cards ─────────────────────────────────
+
+@app.post(
+    "/partner/decision-cards",
+    response_model=PartnerDecisionResponse,
+    dependencies=[Depends(_verify_api_key)],
+)
+def partner_decision_cards(body: PartnerDecisionRequest):
+    """Partner boundary: Java backend → FastAPI → frontend Recommendation JSON."""
+    if rollout.is_kill_switch_active():
+        raise HTTPException(
+            status_code=503, detail="Kill switch active — decisions disabled",
+        )
+
+    try:
+        snapshot = load_partner_decision_signals(body.user_id)
+    except PartnerSignalNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    try:
+        brand_id = body.brand_id or snapshot.brand_id or snapshot.merchant_id
+        objective_weights = {
+            "growth": body.growth,
+            "margin": body.margin,
+            "inventory": body.inventory,
+            "retention": body.retention,
+        }
+        signals = normalize_frontend_objective_weights(
+            objective_weights,
+            snapshot.signals,
+        )
+        policy_pack, ranked = run_once(snapshot.merchant_id, signals=signals)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except Exception as exc:
+        log.exception(
+            "[api] /partner/decision-cards pipeline failure user=%s merchant=%s",
+            body.user_id,
+            snapshot.merchant_id,
+        )
+        raise HTTPException(status_code=500, detail="Pipeline error") from exc
+
+    return {
+        "user_id": body.user_id,
+        "merchant_id": snapshot.merchant_id,
+        "brand_id": brand_id,
+        "mode": policy_pack.get("mode", "shadow"),
+        "policy_version": policy_pack.get("policy_version", "unknown"),
+        "msm_state": policy_pack.get("msm_state", {}),
+        "alerts": policy_pack.get("alerts", []),
+        "data_source": snapshot.data_source,
+        "applied_objective_weights": signals["frontend_objective_weights"],
+        "recommendations": [
+            _decision_card_to_frontend_recommendation(
+                card,
+                snapshot.merchant_id,
+                brand_id,
+            )
+            for card in ranked
+        ],
+    }
+
+
+# ── 5. POST /decision/{merchant_id}/emergency ──────────────────────
 
 @app.post("/decision/{merchant_id}/emergency", dependencies=[Depends(_verify_api_key)])
 def emergency(merchant_id: str, body: EmergencyRequest | None = None):

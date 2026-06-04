@@ -17,7 +17,8 @@ from __future__ import annotations
 import json
 import logging
 from contextlib import contextmanager
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
+from decimal import Decimal
 from typing import Any, Dict, List, Optional
 
 import sqlalchemy as sa
@@ -29,6 +30,10 @@ from .contracts import MerchantStateVector
 log = logging.getLogger(__name__)
 
 _engine: Optional[sa.Engine] = None
+_PARTNER_ADS_TABLES = (
+    "decision_silver_google_ads",
+    "decision_silver_meta_ads",
+)
 
 
 def _get_engine() -> sa.Engine:
@@ -341,6 +346,254 @@ def fetch_latest_merchant_state(merchant_id: str) -> dict | None:
         if isinstance(d.get("metrics_snapshot"), str):
             d["metrics_snapshot"] = json.loads(d["metrics_snapshot"])
         return d
+
+
+def _parse_json_mapping(value: Any) -> dict[str, Any]:
+    if value is None:
+        return {}
+    if isinstance(value, str):
+        return json.loads(value) if value else {}
+    return dict(value)
+
+
+def _json_scalar(value: Any) -> Any:
+    if isinstance(value, Decimal):
+        return float(value)
+    return value
+
+
+def _coerce_date(value: Any) -> date:
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    return date.fromisoformat(str(value)[:10])
+
+
+def _number(value: Any) -> float:
+    if value is None:
+        return 0.0
+    if isinstance(value, Decimal):
+        return float(value)
+    return float(value)
+
+
+def _safe_ratio(numerator: float, denominator: float, default: float = 0.0) -> float:
+    return numerator / denominator if denominator else default
+
+
+def _aggregate_partner_ads_rows(
+    *,
+    user_id: str,
+    rows: list[dict[str, Any]],
+    source_tables: list[str],
+) -> dict[str, Any]:
+    latest_date = max(row["date"] for row in rows)
+    rows_7d = [
+        row
+        for row in rows
+        if timedelta(days=0) <= latest_date - row["date"] <= timedelta(days=6)
+    ]
+    rows_30d = [
+        row
+        for row in rows
+        if timedelta(days=0) <= latest_date - row["date"] <= timedelta(days=29)
+    ]
+
+    def total(window: list[dict[str, Any]], key: str) -> float:
+        return sum(_number(row.get(key)) for row in window)
+
+    spend_7d = total(rows_7d, "spend")
+    spend_30d = total(rows_30d, "spend")
+    impressions_7d = total(rows_7d, "impressions")
+    impressions_30d = total(rows_30d, "impressions")
+    clicks_7d = total(rows_7d, "clicks")
+    clicks_30d = total(rows_30d, "clicks")
+    conversions_7d = total(rows_7d, "conversions")
+    conversions_30d = total(rows_30d, "conversions")
+    conversion_value_7d = total(rows_7d, "conversion_value")
+    conversion_value_30d = total(rows_30d, "conversion_value")
+
+    cac_7d = _safe_ratio(spend_7d, conversions_7d, spend_7d if spend_7d else 0.0)
+    cac_baseline_30d = _safe_ratio(
+        spend_30d,
+        conversions_30d,
+        spend_30d if spend_30d else 0.0,
+    )
+    roas_7d = _safe_ratio(conversion_value_7d, spend_7d)
+    roas_baseline_30d = _safe_ratio(conversion_value_30d, spend_30d)
+
+    quality: dict[str, Any] = {
+        "source_layer": "silver_ads",
+        "source_tables": source_tables,
+    }
+    if conversion_value_7d <= 0:
+        quality["roas_7d"] = "unavailable_zero_conversion_value"
+    if conversion_value_30d <= 0:
+        quality["roas_baseline_30d"] = "unavailable_zero_conversion_value"
+    if conversion_value_7d <= 0 and conversion_value_30d <= 0:
+        quality["roas"] = "unavailable_zero_conversion_value"
+    if conversions_7d <= 0 or conversions_30d <= 0:
+        quality["cac"] = "fallback_no_conversions"
+
+    campaign_names = sorted(
+        {
+            str(row.get("campaign_name"))
+            for row in rows_30d
+            if row.get("campaign_name")
+        }
+    )
+
+    signals = {
+        "merchant_id": user_id,
+        "brand_id": user_id,
+        "cac_7d": cac_7d,
+        "cac_baseline_30d": cac_baseline_30d,
+        "cac_vs_baseline_ratio": _safe_ratio(cac_7d, cac_baseline_30d),
+        "roas_7d": roas_7d,
+        "roas_baseline_30d": roas_baseline_30d,
+        "roas_vs_baseline_ratio": _safe_ratio(roas_7d, roas_baseline_30d),
+        "paid_spend_7d": spend_7d,
+        "paid_spend_30d": spend_30d,
+        "monthly_ad_spend": spend_30d,
+        "paid_impressions_7d": int(impressions_7d),
+        "paid_impressions_30d": int(impressions_30d),
+        "paid_clicks_7d": int(clicks_7d),
+        "paid_clicks_30d": int(clicks_30d),
+        "paid_conversions_7d": int(conversions_7d),
+        "paid_conversions_30d": int(conversions_30d),
+        "paid_conversion_value_7d": conversion_value_7d,
+        "paid_conversion_value_30d": conversion_value_30d,
+        "paid_ctr_7d": _safe_ratio(clicks_7d, impressions_7d),
+        "paid_ctr_30d": _safe_ratio(clicks_30d, impressions_30d),
+        "paid_cpc_7d": _safe_ratio(spend_7d, clicks_7d),
+        "paid_cpc_30d": _safe_ratio(spend_30d, clicks_30d),
+        "paid_cpm_7d": _safe_ratio(spend_7d * 1000, impressions_7d),
+        "paid_cpm_30d": _safe_ratio(spend_30d * 1000, impressions_30d),
+        "paid_cvr_7d": _safe_ratio(conversions_7d, clicks_7d),
+        "paid_cvr_30d": _safe_ratio(conversions_30d, clicks_30d),
+        "partner_ads_latest_date": latest_date.isoformat(),
+        "partner_ads_rows_7d": len(rows_7d),
+        "partner_ads_rows_30d": len(rows_30d),
+        "partner_ads_campaigns": campaign_names[:10],
+        "partner_signal_quality": quality,
+    }
+
+    return {
+        "user_id": user_id,
+        "merchant_id": user_id,
+        "brand_id": user_id,
+        "signals": signals,
+        "data_source": "+".join(source_tables),
+        "calculated_at": datetime.now(timezone.utc),
+    }
+
+
+def _fetch_partner_ads_signal_snapshot(
+    c: sa.Connection,
+    user_id: str,
+) -> dict | None:
+    rows: list[dict[str, Any]] = []
+    source_tables: list[str] = []
+
+    for table_name in _PARTNER_ADS_TABLES:
+        try:
+            result = c.execute(
+                text(f"""
+                    SELECT date, spend, impressions, clicks, conversions,
+                           conversion_value, campaign_name, tenant_id
+                    FROM {table_name}
+                    WHERE CAST(user_id AS TEXT) = :uid
+                    ORDER BY date ASC
+                """),
+                dict(uid=user_id),
+            ).fetchall()
+        except sa.exc.SQLAlchemyError:
+            log.warning(
+                "Partner ads table %s unavailable while loading user_id=%s",
+                table_name,
+                user_id,
+                exc_info=True,
+            )
+            continue
+
+        if result:
+            source_tables.append(table_name)
+
+        for row in result:
+            item = dict(row._mapping)
+            item["date"] = _coerce_date(item["date"])
+            rows.append(item)
+
+    if not rows:
+        return None
+
+    return _aggregate_partner_ads_rows(
+        user_id=user_id,
+        rows=rows,
+        source_tables=source_tables,
+    )
+
+
+def fetch_latest_partner_signal_snapshot(user_id: str) -> dict | None:
+    """Return latest partner signal data for a frontend user_id.
+
+    Partner schema currently exposes user_id, not merchant_id. Day-1 runtime
+    maps user_id directly to merchant_id at the API/adapter boundary.
+    """
+    with _conn() as c:
+        health_row = c.execute(
+            text("""
+                SELECT user_id, metric_snapshot, calculated_at
+                FROM decision_health_score
+                WHERE user_id = :uid
+                ORDER BY calculated_at DESC
+                LIMIT 1
+            """),
+            dict(uid=user_id),
+        ).fetchone()
+
+        signals: dict[str, Any] = {}
+        calculated_at = None
+        if health_row is not None:
+            health = dict(health_row._mapping)
+            signals.update(_parse_json_mapping(health.get("metric_snapshot")))
+            calculated_at = health.get("calculated_at")
+
+        metric_rows = c.execute(
+            text("""
+                SELECT metric_name, metric_value, metric_unit, dimension,
+                       metric_date, metadata_json
+                FROM decision_metric_value
+                WHERE user_id = :uid
+                ORDER BY metric_date DESC
+            """),
+            dict(uid=user_id),
+        ).fetchall()
+
+        seen_metric_names: set[str] = set()
+        for row in metric_rows:
+            metric = dict(row._mapping)
+            metric_name = metric.get("metric_name")
+            if not metric_name or metric_name in seen_metric_names:
+                continue
+            seen_metric_names.add(metric_name)
+            signals[str(metric_name)] = _json_scalar(metric.get("metric_value"))
+
+        if not signals:
+            return _fetch_partner_ads_signal_snapshot(c, user_id)
+
+        merchant_id = str(signals.get("merchant_id") or user_id)
+        brand_id = str(signals.get("brand_id") or signals.get("brand") or merchant_id)
+
+        return {
+            "user_id": user_id,
+            "merchant_id": merchant_id,
+            "brand_id": brand_id,
+            "signals": signals,
+            "data_source": "decision_health_score+decision_metric_value",
+            "calculated_at": calculated_at,
+        }
 
 
 def fetch_wsm_for_billing(
