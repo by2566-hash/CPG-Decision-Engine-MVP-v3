@@ -123,16 +123,52 @@ The response is pure JSON. Python `DecisionCard` objects are never returned dire
 
 ## Postgres Input Boundary
 
-Day-1 adapter reads partner signal data from:
+Day-1 adapter first reads normalized partner signal data from:
 
 - `decision_health_score(user_id, metric_snapshot, calculated_at)`
 - `decision_metric_value(user_id, metric_name, metric_value, metric_unit, dimension, metric_date, metadata_json)`
 
 The latest `decision_health_score.metric_snapshot` is loaded first, then the latest value per `decision_metric_value.metric_name` overlays that snapshot.
 
+If those normalized signal tables are empty for the requested `user_id`, Python falls back to partner silver ads tables:
+
+- `decision_silver_google_ads`
+- `decision_silver_meta_ads`
+
+The fallback aggregates rows for the requested `user_id` over the latest available 7-day and 30-day windows and emits acquisition/growth signals into the same V3 `signals` dict:
+
+```json
+{
+  "cac_7d": 25.78,
+  "cac_baseline_30d": 38.08,
+  "cac_vs_baseline_ratio": 0.68,
+  "roas_7d": 0,
+  "roas_baseline_30d": 0,
+  "monthly_ad_spend": 11081.44,
+  "paid_spend_7d": 2139.9,
+  "paid_clicks_7d": 1758,
+  "paid_impressions_7d": 45880,
+  "paid_conversions_7d": 83,
+  "partner_signal_quality": {
+    "source_layer": "silver_ads",
+    "source_tables": ["decision_silver_meta_ads"],
+    "roas_7d": "unavailable_zero_conversion_value",
+    "roas_baseline_30d": "unavailable_zero_conversion_value",
+    "roas": "unavailable_zero_conversion_value"
+  }
+}
+```
+
+The fallback does not fabricate retention, inventory, margin, conversion, or promotion facts. Missing non-ads dimensions use the existing V3 missing-signal fallback path.
+
 If `metric_snapshot` contains `merchant_id`, Python uses it as the V3 pipeline merchant id. If it contains `brand_id` or `brand`, Python uses that for frontend `Recommendation.brand`. Otherwise both fall back to `user_id`.
 
-Live schema discovery on 2026-06-03 confirmed these partner tables exist in the partner `smart_brain` database, but the relevant signal tables currently had no business rows available for a real smoke test.
+Live schema discovery on 2026-06-04 confirmed:
+
+- `decision_silver_meta_ads` has 101 rows for `user_id=100`, date range `2026-03-06` to `2026-06-03`.
+- `decision_silver_google_ads` currently has 0 rows.
+- `decision_health_score` and `decision_metric_value` currently have 0 rows.
+- Current Meta Ads `conversion_value` is 0, so ROAS is marked as unavailable instead of treated as validated revenue.
 
 There is no separate partner mapping table in the current schema. Day-1 fallback mapping is `merchant_id = user_id`, so the existing V3 pipeline can run with the partner `user_id` as its merchant id. If partner data later supplies a distinct merchant/account id, place it in `metric_snapshot.merchant_id` or move the mapping into the adapter before changing the pipeline.
 
@@ -162,7 +198,7 @@ The partner endpoint passes these overrides into `run_once()` through `signals`.
 - `POSTGRES_DSN`
 - `REDIS_URL`
 - `API_KEY`
-- `SHOPLINE_APP_SECRET`
+- Optional only if Shopline webhook is enabled: `ENABLE_SHOPLINE_WEBHOOK=true`, `SHOPLINE_APP_SECRET`
 - `ALLOW_PLACEHOLDER_SECRETS=1` for local development only
 
 ## Unresolved Partner Questions

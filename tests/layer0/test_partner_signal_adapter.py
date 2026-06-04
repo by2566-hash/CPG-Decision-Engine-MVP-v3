@@ -49,6 +49,37 @@ def _create_partner_signal_tables(db_engine):
                 """
             )
         )
+        for table_name in (
+            "decision_silver_google_ads",
+            "decision_silver_meta_ads",
+        ):
+            conn.execute(
+                sa.text(
+                    f"""
+                    CREATE TABLE {table_name} (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        user_id VARCHAR(64) NOT NULL,
+                        data_source_id INTEGER,
+                        batch_id VARCHAR(128),
+                        date DATE NOT NULL,
+                        campaign_id VARCHAR(128),
+                        campaign_name VARCHAR(256),
+                        spend NUMERIC,
+                        impressions INTEGER,
+                        clicks INTEGER,
+                        ctr NUMERIC,
+                        cpc NUMERIC,
+                        cpm NUMERIC,
+                        conversions INTEGER,
+                        conversion_value NUMERIC,
+                        raw_json TEXT,
+                        raw_data_id INTEGER,
+                        created_at TIMESTAMP,
+                        tenant_id INTEGER
+                    )
+                    """
+                )
+            )
         conn.execute(
             sa.text(
                 """
@@ -120,6 +151,123 @@ def test_load_partner_decision_signals_raises_when_missing(db_engine):
 
     with pytest.raises(PartnerSignalNotFound):
         load_partner_decision_signals("missing_user")
+
+
+def test_load_partner_decision_signals_falls_back_to_silver_ads(db_engine):
+    _create_partner_signal_tables(db_engine)
+    now = datetime.now(timezone.utc)
+    with db_engine.begin() as conn:
+        conn.execute(
+            sa.text(
+                """
+                INSERT INTO decision_silver_meta_ads
+                    (user_id, date, campaign_name, spend, impressions, clicks,
+                     conversions, conversion_value, created_at, tenant_id)
+                VALUES
+                    (:uid, '2026-06-03', 'Meta Prospecting', 100, 1000, 50,
+                     10, 400, :created_at, 1),
+                    (:uid, '2026-06-02', 'Meta Prospecting', 60, 600, 30,
+                     6, 240, :created_at, 1),
+                    (:uid, '2026-05-10', 'Meta Prospecting', 300, 3000, 150,
+                     15, 600, :created_at, 1)
+                """
+            ),
+            {"uid": "100", "created_at": now},
+        )
+        conn.execute(
+            sa.text(
+                """
+                INSERT INTO decision_silver_google_ads
+                    (user_id, date, campaign_name, spend, impressions, clicks,
+                     conversions, conversion_value, created_at, tenant_id)
+                VALUES
+                    (:uid, '2026-06-03', 'Google Brand', 40, 400, 20,
+                     4, 160, :created_at, 1)
+                """
+            ),
+            {"uid": "100", "created_at": now},
+        )
+
+    loaded = load_partner_decision_signals("100")
+
+    assert loaded.user_id == "100"
+    assert loaded.merchant_id == "100"
+    assert loaded.brand_id == "100"
+    assert loaded.data_source == (
+        "decision_silver_google_ads+decision_silver_meta_ads"
+    )
+    assert loaded.signals["paid_spend_7d"] == pytest.approx(200.0)
+    assert loaded.signals["monthly_ad_spend"] == pytest.approx(500.0)
+    assert loaded.signals["paid_clicks_7d"] == 100
+    assert loaded.signals["paid_impressions_7d"] == 2000
+    assert loaded.signals["paid_conversions_7d"] == 20
+    assert loaded.signals["cac_7d"] == pytest.approx(10.0)
+    assert loaded.signals["cac_baseline_30d"] == pytest.approx(500.0 / 35.0)
+    assert loaded.signals["roas_7d"] == pytest.approx(4.0)
+    assert loaded.signals["roas_baseline_30d"] == pytest.approx(2.8)
+    assert loaded.signals["cac_vs_baseline_ratio"] == pytest.approx(0.7)
+    assert loaded.signals["partner_ads_latest_date"] == "2026-06-03"
+
+
+def test_load_partner_decision_signals_marks_unavailable_roas_for_meta_only(db_engine):
+    _create_partner_signal_tables(db_engine)
+    now = datetime.now(timezone.utc)
+    with db_engine.begin() as conn:
+        conn.execute(
+            sa.text(
+                """
+                INSERT INTO decision_silver_meta_ads
+                    (user_id, date, campaign_name, spend, impressions, clicks,
+                     conversions, conversion_value, created_at, tenant_id)
+                VALUES
+                    (:uid, '2026-06-03', 'Chafolio_Prospecting', 229.02, 5809, 245,
+                     7, 0, :created_at, 1),
+                    (:uid, '2026-06-02', 'Chafolio_Prospecting', 296.32, 7237, 299,
+                     12, 0, :created_at, 1)
+                """
+            ),
+            {"uid": "100", "created_at": now},
+        )
+
+    loaded = load_partner_decision_signals("100")
+
+    assert loaded.data_source == "decision_silver_meta_ads"
+    assert loaded.signals["cac_7d"] == pytest.approx((229.02 + 296.32) / 19)
+    assert loaded.signals["roas_7d"] == 0.0
+    assert loaded.signals["roas_baseline_30d"] == 0.0
+    assert loaded.signals["partner_signal_quality"]["roas"] == (
+        "unavailable_zero_conversion_value"
+    )
+
+
+def test_load_partner_decision_signals_marks_window_level_roas_quality(db_engine):
+    _create_partner_signal_tables(db_engine)
+    now = datetime.now(timezone.utc)
+    with db_engine.begin() as conn:
+        conn.execute(
+            sa.text(
+                """
+                INSERT INTO decision_silver_meta_ads
+                    (user_id, date, campaign_name, spend, impressions, clicks,
+                     conversions, conversion_value, created_at, tenant_id)
+                VALUES
+                    (:uid, '2026-06-03', 'Recent Zero Revenue', 100, 1000, 50,
+                     10, 0, :created_at, 1),
+                    (:uid, '2026-05-15', 'Older Revenue', 300, 3000, 150,
+                     15, 600, :created_at, 1)
+                """
+            ),
+            {"uid": "100", "created_at": now},
+        )
+
+    loaded = load_partner_decision_signals("100")
+
+    assert loaded.signals["roas_7d"] == 0.0
+    assert loaded.signals["roas_baseline_30d"] == pytest.approx(1.5)
+    assert loaded.signals["partner_signal_quality"]["roas_7d"] == (
+        "unavailable_zero_conversion_value"
+    )
+    assert "roas_baseline_30d" not in loaded.signals["partner_signal_quality"]
 
 
 def test_normalize_frontend_objective_weights_requires_four_objectives():

@@ -1,6 +1,6 @@
 import os
 
-from pydantic import field_validator
+from pydantic import field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from typing import List
 
@@ -13,18 +13,22 @@ class Settings(BaseSettings):
     redis_url: str = "redis://localhost:6379/0"
     shopline_app_secret: str = "replace_me"   # Shopline webhook HMAC signing secret
     shopline_api_version: str = "v20260301"
+    enable_shopline_webhook: bool = False
     api_key: str = "replace_me"               # REST API access key (X-API-Key header)
 
     # ── Startup validators — reject placeholder credentials in non-dev environments ──
-    @field_validator("shopline_app_secret")
-    @classmethod
-    def reject_placeholder_shopline_secret(cls, v: str) -> str:
-        if v == "replace_me" and os.getenv("ALLOW_PLACEHOLDER_SECRETS") != "1":
+    @model_validator(mode="after")
+    def reject_placeholder_shopline_secret_when_enabled(self) -> "Settings":
+        if (
+            self.enable_shopline_webhook
+            and self.shopline_app_secret == "replace_me"
+            and os.getenv("ALLOW_PLACEHOLDER_SECRETS") != "1"
+        ):
             raise ValueError(
-                "shopline_app_secret is still 'replace_me'. "
-                "Set SHOPLINE_APP_SECRET env var, or set ALLOW_PLACEHOLDER_SECRETS=1 for local dev."
+                "SHOPLINE_APP_SECRET is required when ENABLE_SHOPLINE_WEBHOOK=true. "
+                "Set SHOPLINE_APP_SECRET, or set ALLOW_PLACEHOLDER_SECRETS=1 for local dev."
             )
-        return v
+        return self
 
     @field_validator("api_key")
     @classmethod
