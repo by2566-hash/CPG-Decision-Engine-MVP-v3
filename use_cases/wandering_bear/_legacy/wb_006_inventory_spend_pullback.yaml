@@ -24,6 +24,19 @@ module: acquisition
 observed_at: "2023-01"
 evidence_quality: high
 
+source_alignment:
+  source_batch: use_case_library_final
+  source_case_id: FP-006
+  source_path: partner_drafts/kg_partner/use_case_library_final/use_case_library_final.md
+  source_line: 1717
+  alignment_status: exact_match_legacy
+  checked_at: "2026-06-01"
+  notes: >
+    FINAL source confirms the Jan 9, 2023 Slack action date, 71% PM Meta-spend
+    concentration, $350 total pullback, 5.89% spend decline, and CAC improvement.
+    Legacy status is unchanged because this file still references a Phase 1
+    stub playbook.
+
 calibration_value_for:
   - action_id: PAUSE_CHANNEL
     gmv_lift_derivation:

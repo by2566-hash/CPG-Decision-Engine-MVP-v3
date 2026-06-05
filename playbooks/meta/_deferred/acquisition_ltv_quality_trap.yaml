@@ -22,6 +22,18 @@ activation_phase: 2
 cross_module: true
 requires_retention_validation: true
 
+source_alignment:
+  source_batch: use_case_library_final
+  source_case_id: FP-013
+  source_path: partner_drafts/kg_partner/use_case_library_final/use_case_library_final.md
+  source_line: 2170
+  alignment_status: exact_match_deferred
+  checked_at: "2026-06-01"
+  notes: >
+    FINAL source confirms the $155 to $76 CAC improvement, 60-75 day
+    second-order-rate degradation, early third-order weakness, and value-led
+    creative replacement. Activation blockers remain unchanged.
+
 blocked_by:
   - dependency: creative_level_cohort_attribution
     description: >

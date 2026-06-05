@@ -10,8 +10,20 @@ use_case_id: cba_001
 brand: consumer_brand_a
 meta_pattern_ref: acquisition_ugc_creative
 module: acquisition
-observed_at: "Phase 1 intake — timeframe to be confirmed by partner"
+observed_at: "FINAL source: 3/1-3/27 rollout window; calendar year not specified"
 evidence_quality: high             # specific before/after CAC and CPM numbers confirmed by partner
+
+source_alignment:
+  source_batch: use_case_library_final
+  source_case_id: FP-010
+  source_path: partner_drafts/kg_partner/use_case_library_final/use_case_library_final.md
+  source_line: 1981
+  alignment_status: enriched_from_final
+  checked_at: "2026-06-01"
+  notes: >
+    FINAL source confirms existing CAC/CPM/UGC numbers and adds concrete
+    pre/post rollout windows. Runtime behavior, brand binding thresholds, and
+    utility priors were not changed in Phase 1 alignment.
 
 calibration_value_for:
   - action_id: AUDIT_CREATIVE_MIX
@@ -53,7 +65,9 @@ calibration_value_for:
         pending partner confirmation.
 
 data_observed:
-  period: "Phase 1 intake — timeframe to be confirmed by partner"
+  period: "3/1-3/27 rollout window; calendar year not specified in FINAL source"
+  pre_rollout_window: "3/1-3/15"
+  post_rollout_window: "3/16-3/27"
 
   ugc_program:
     creator_applications: 1000
@@ -97,7 +111,7 @@ outcome_value: >
   when CAC and CPM rise together with stable structural variables.
 
 partner_clarifications_needed:
-  - "Exact timeframe of the UGC program launch and baseline period"
+  - "Calendar year for the 3/1-3/27 UGC rollout window"
   - "Monthly GMV during the observation period (currently estimated at $1M)"
   - "Average order value during the observation period (currently estimated at $50)"
   - "Total monthly ad spend across all channels (not just Meta)"

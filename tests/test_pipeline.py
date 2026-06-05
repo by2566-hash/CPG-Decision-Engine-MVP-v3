@@ -56,6 +56,33 @@ _SIGNALS = {
 
 
 class TestPipeline:
+    def test_frontend_policy_weight_overrides_apply_to_scoring_policy(self):
+        """Frontend objective weights must update policy_weights before scoring."""
+        from src.decision_engine.layer4_serving.pipeline import _apply_policy_weight_overrides
+
+        policy = {
+            "policy_version": "default_v1",
+            "policy_weights": {
+                "gmv_lift": 0.4,
+                "margin_lift": 0.3,
+                "inventory_risk_reduction": 0.2,
+                "retention_lift": 0.1,
+            },
+        }
+        signals = {
+            "policy_weight_overrides": {
+                "gmv_lift": 0.7,
+                "margin_lift": 0.1,
+                "inventory_risk_reduction": 0.1,
+                "retention_lift": 0.1,
+            }
+        }
+
+        updated = _apply_policy_weight_overrides(policy, signals)
+
+        assert updated["policy_weights"] == signals["policy_weight_overrides"]
+        assert policy["policy_weights"]["gmv_lift"] == 0.4
+
     def test_full_pipeline_returns_decision_cards_with_all_v3_fields(self):
         """Pipeline response includes all V3 fields: verification_chain,
         impact_estimate, merchant_copy, msm_state_summary."""

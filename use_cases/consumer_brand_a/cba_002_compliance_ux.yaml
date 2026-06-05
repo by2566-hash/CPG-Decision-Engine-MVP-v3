@@ -10,8 +10,21 @@ use_case_id: cba_002
 brand: consumer_brand_a
 meta_pattern_ref: conversion_compliance_friction
 module: conversion
-observed_at: "Phase 1 intake — timeframe to be confirmed by partner"
-evidence_quality: high             # specific CVR before/after confirmed; 3× recovery confirmed by partner
+observed_at: "FINAL source: 1/9 deploy; redesigned 5 days later; calendar year not specified"
+evidence_quality: high             # specific CVR before/after and CAC movement confirmed by FINAL source
+
+source_alignment:
+  source_batch: use_case_library_final
+  source_case_id: FP-011
+  source_path: partner_drafts/kg_partner/use_case_library_final/use_case_library_final.md
+  source_line: 2043
+  alignment_status: enriched_from_final
+  checked_at: "2026-06-01"
+  notes: >
+    FINAL source confirms existing compliance-friction diagnosis and adds the
+    1/9 deploy date, 5-day redesign window, and CAC movement. Runtime behavior,
+    brand binding thresholds, and utility priors were not changed in Phase 1
+    alignment.
 
 calibration_value_for:
   - action_id: AUDIT_RECENT_CHANGES
@@ -31,26 +44,27 @@ calibration_value_for:
     gmv_lift_derivation:
       method: rate_lift_to_gmv_lift
       cvr_before: 0.009                 # <1%; using 0.9% conservatively
-      cvr_after_recovery_multiple: 3.0  # partner confirmed "CVR recovered 3×"
-      cvr_after_est: 0.027              # 3× recovery from 0.9%
-      cvr_delta_pp: 0.018               # 2.7% - 0.9% = 1.8 percentage points
+      cvr_after_recovery_multiple: 2.8  # FINAL: <1% recovered to about 2.5% (~3×)
+      cvr_after_est: 0.025              # FINAL source: recovered back to about 2.5%
+      cvr_delta_pp: 0.016               # 2.5% - 0.9% = 1.6 percentage points
       cross_source_multiplier: 2.0      # paid + organic both benefit simultaneously
       conversion_driven_revenue_share: 0.80  # conservative estimate
       gmv_lift_estimate: 0.12
       estimated: true
       derivation_note: >
-        0.018 × 2.0 × 0.80 ≈ 0.029 pure CVR-delta basis.
+        0.016 × 2.0 × 0.80 ≈ 0.026 pure CVR-delta basis.
         Rounded up to 0.12 because: (1) CAC also improved as conversion
-        efficiency was restored (compound benefit), (2) 3× recovery is a
+        efficiency was restored (compound benefit), (2) ~3× recovery is a
         large-magnitude recovery, (3) health data quiz is the PRIMARY
         conversion flow (high traffic concentration). Session count, monthly
         GMV, and paid/organic split are all estimated pending partner data.
 
 data_observed:
-  period: "Phase 1 intake — timeframe to be confirmed by partner"
+  period: "1/9 deploy plus 5-day redesign window; calendar year not specified in FINAL source"
 
   trigger_event:
     change_type: legal_compliance_deploy
+    deploy_date_month_day: "1/9"
     element: health_data_consent_popup
     placement: quiz_entry
     copy_issue: "clinical language, implemented without UX testing"
@@ -58,17 +72,21 @@ data_observed:
 
   before_popup:
     site_cvr: 0.025                    # 2.5%
+    cac_baseline: 100                  # roughly $100 before collapse
     paid_cvr_affected: true
     organic_cvr_affected: true
 
   after_popup_deployed:
     site_cvr: 0.009                    # <1%; using 0.9% conservatively
+    cac_during_drop: 125               # roughly $125 during collapse
     onset: "overnight"
     cross_source_symmetry: true        # both paid and organic affected simultaneously
 
   after_remediation:
-    cvr_recovery_multiple: 3.0         # CVR recovered 3× — confirmed by partner
-    cvr_after_recovery_est: 0.027      # 3 × 0.9%
+    redesign_window_days: 5
+    cvr_recovery_multiple: 2.8         # under 1% to about 2.5%; approx 3×
+    cvr_after_recovery_est: 0.025      # FINAL source: recovered back to about 2.5%
+    cac_after_fix: 100                 # returned to the $100 range after fix
     cross_source_benefit: true         # fix benefited paid and organic simultaneously
     cac_improvement_observed: true     # "CAC improved as conversion efficiency was restored"
 
@@ -89,8 +107,9 @@ counterfactual: >
 outcome_value: >
   Root cause identified as compliance friction via timeline correlation — the
   CVR drop onset coincided with the compliance popup deploy. After redesigning
-  the popup copy and providing alternative flow paths, CVR recovered 3× (from
-  <1% back to ~2.7%). Fix applied to the core flow benefited both paid and
+  the popup copy and providing alternative flow paths, CVR recovered from
+  <1% back to about 2.5% within the FINAL source's 5-day redesign window.
+  Fix applied to the core flow benefited both paid and
   organic traffic simultaneously (cross-source symmetry). CAC improved as a
   downstream effect because conversion efficiency was restored. Pattern
   established: for sudden cross-source CVR collapse, always audit recent
@@ -99,8 +118,8 @@ outcome_value: >
   Trigger Discipline).
 
 partner_clarifications_needed:
-  - "Exact date of the compliance popup deploy and baseline CVR period"
+  - "Calendar year for the 1/9 compliance popup deploy"
   - "Monthly sessions to the quiz flow (for accurate gmv_lift calculation)"
   - "Paid vs organic split of affected traffic"
   - "Monthly GMV during the observation period"
-  - "Was the 3× recovery measured against the collapsed CVR or against the original baseline?"
+  - "Exact collapsed CVR used for the under-1% to about-2.5% recovery shorthand"
