@@ -1,0 +1,57 @@
+# CPG Decision Engine V3 — production runtime dependencies
+# Install: pip install -r requirements.txt
+# Requires: Python >= 3.11
+#
+# SQLAlchemy + postgresql:// DSN needs psycopg2-binary (sync driver).
+
+# ── API & server ──────────────────────────────────────────────────
+fastapi>=0.110.0
+uvicorn>=0.29.0
+starlette>=0.46.0
+pydantic>=2.6.0
+pydantic-settings>=2.2.0
+python-dotenv>=1.0.0
+annotated-doc>=0.0.2
+annotated-types>=0.6.0
+anyio>=4.0.0
+click>=8.0.0
+h11>=0.14.0
+httpx>=0.27.0
+httpcore>=1.0.0
+certifi>=2024.0.0
+idna>=3.0
+
+# ── Database (Postgres via SQLAlchemy sync) ─────────────────────────
+sqlalchemy>=2.0.0
+psycopg2-binary>=2.9.9
+asyncpg>=0.29.0
+
+# ── Cache & messaging ─────────────────────────────────────────────
+redis>=5.0.0
+
+# ── AWS (optional connectors / future use) ──────────────────────────
+boto3>=1.34.0
+botocore>=1.34.0
+jmespath>=1.0.0
+s3transfer>=0.10.0
+urllib3>=2.0.0
+
+# ── ML & data ───────────────────────────────────────────────────────
+scikit-learn>=1.4.0
+numpy>=1.26.0
+pandas>=2.2.0
+scipy>=1.11.0
+joblib>=1.3.0
+threadpoolctl>=3.0.0
+narwhals>=2.0.0
+
+# ── Config / playbooks ──────────────────────────────────────────────
+PyYAML>=6.0.0
+
+# ── Transitive / typing ─────────────────────────────────────────────
+python-dateutil>=2.8.0
+six>=1.16.0
+typing-extensions>=4.8.0
+typing-inspection>=0.4.0
+pydantic-core>=2.0.0
+packaging>=23.0
